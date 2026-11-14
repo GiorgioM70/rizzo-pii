@@ -689,6 +689,20 @@ def _text_from_bytes(name, data):
     )
 
 
+def _no_text_pages(name, data):
+    """Pagine (da 1) con immagini ma senza testo estraibile: le PII li' dentro NON
+    vengono anonimizzate (niente OCR). Vuota se non e' un PDF o non si apre."""
+    if not data or not _is_pdf(name, data):
+        return []
+    try:
+        with fitz.open(stream=data, filetype="pdf") as doc:
+            if doc.needs_pass:
+                return []
+            return pdf_text.pages_without_text(doc)
+    except Exception:
+        return []
+
+
 class PdfLocked(ValueError):
     """PDF con password di apertura: /preview lo segnala con `code`, cosi' l'UI lo
     dice nella sua lingua invece di "Anteprima del PDF non disponibile"."""
@@ -709,9 +723,12 @@ def _uploaded_file():
 @app.route("/analyze", methods=["POST"])
 def analyze_route():
     up = _uploaded_file()
+    no_text = []
     if up is not None:
         try:
-            text = _extract_upload(up)
+            name, data = up.filename, up.read()
+            text = _text_from_bytes(name, data)
+            no_text = _no_text_pages(name, data)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception as e:                       # PDF corrotto / protetto
@@ -745,6 +762,7 @@ def analyze_route():
     # valore in chiaro: la chiave manca del tutto, come il valore nei segmenti (#118).
     if keep_map:
         out["source_text"] = text
+    out["pages_no_text"] = no_text
     return jsonify(out)
 
 
@@ -761,6 +779,8 @@ def _pdf_response(data, report, redactions, filename="documento_anonimizzato.pdf
     resp.headers["X-PII-Residual"] = str(len(report.get("residual", [])))
     resp.headers["X-PII-Skipped"] = str(len(report.get("skipped", [])))
     resp.headers["X-PII-Notfound"] = str(len(report.get("not_found", [])))
+    # pagine scansionate (immagini senza testo): restano come sono, PII comprese
+    resp.headers["X-PII-NoText-Pages"] = ",".join(map(str, report.get("no_text_pages", [])))
     return resp
 
 
@@ -831,6 +851,7 @@ def _build_anonymized_pdf():
             out, report = pdf_export.redact_pdf(data, res["mapping"])
         except pdf_export.PdfError as e:
             raise _ReqError(str(e))
+        report["no_text_pages"] = _no_text_pages(name, data)
         if report["occurrences"] == 0:
             raise _ReqError("Nessuna occorrenza trovata nel PDF: se il documento "
                             "e' una scansione (testo dentro un'immagine) la "
@@ -877,6 +898,7 @@ def pdf_preview_route():
         "residual": len(report.get("residual", [])),
         "skipped": len(report.get("skipped", [])),
         "not_found": len(report.get("not_found", [])),
+        "pages_no_text": report.get("no_text_pages", []),
     })
 
 
@@ -902,7 +924,8 @@ def preview_route():
     except Exception as e:                           # PDF corrotto / protetto
         return jsonify({"error": f"Impossibile leggere il file: {e}"}), 400
     return jsonify({"doc_id": doc_id, "n_pages": n_pages,
-                    "filename": _safe_name(name), "text": text})
+                    "filename": _safe_name(name), "text": text,
+                    "pages_no_text": _no_text_pages(name, data)})
 
 
 @app.route("/doc/<doc_id>/page/<int:n>.png")

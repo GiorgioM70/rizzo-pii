@@ -77,6 +77,7 @@ const T = {
   copy:"Copia per ChatGPT", dl:"Scarica dizionario", dlpdf:"Scarica PDF anonimizzato",
   t_pdf_making:"Genero il PDF…", t_pdf_ok:"PDF anonimizzato scaricato",
   t_pdf_err:"Errore nella creazione del PDF",
+  t_no_text:p=>"ATTENZIONE: "+(p.length===1?"la pagina "+p[0]+" e' un'immagine":"le pagine "+p.join(", ")+" sono immagini")+" senza testo (scansione?): le PII che contiene restano visibili, anche nel PDF anonimizzato.",
   t_pdf_warn:(r,s)=>"PDF scaricato · ATTENZIONE: "+(r+s)+" valori sono rimasti in chiaro"
     +" ("+r+" non redatti, "+s+" troppo corti per essere cercati): controlla il file"
     +" prima di condividerlo",
@@ -143,6 +144,7 @@ const T = {
   copy:"Copy for ChatGPT", dl:"Download dictionary", dlpdf:"Download anonymized PDF",
   t_pdf_making:"Building the PDF…", t_pdf_ok:"Anonymized PDF downloaded",
   t_pdf_err:"Error while creating the PDF",
+  t_no_text:p=>"WARNING: "+(p.length===1?"page "+p[0]+" is an image":"pages "+p.join(", ")+" are images")+" with no text (scanned?): any PII on them stays visible, in the anonymized PDF too.",
   t_pdf_warn:(r,s)=>"PDF downloaded · WARNING: "+(r+s)+" values were left in clear"
     +" ("+r+" not redacted, "+s+" too short to be searched safely): check the file"
     +" before sharing it",
@@ -229,6 +231,10 @@ function hue(s){let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))%360;return h;}
 function colors(label){const h=hue(label);
   return {bg:`hsl(${h} 56% 96%)`,bd:`hsl(${h} 42% 81%)`,tx:`hsl(${h} 40% 38%)`};}
 
+/* pagine immagine senza testo in un PDF (misto o scansionato): senza OCR le PII li'
+   dentro non si vedono e restano anche nel PDF anonimizzato. Va detto, sempre. */
+function warnNoText(d){const p=(d&&d.pages_no_text)||[];
+  if(p.length)toast(T[L].t_no_text(p),false,12000);}
 function toast(msg,ok=true,ms=1800){const t=$('toast');t.textContent=msg;t.className='show'+(ok?' ok':'');
   clearTimeout(t._t);t._t=setTimeout(()=>t.className='',ms);}
 
@@ -316,6 +322,7 @@ async function onFile(f){
     SRC_DOC=d;$('src').value=d.text||'';
     renderPages($('pdfSrcView'),d);
     $('inHint').style.display='none';
+    warnNoText(d);
   }catch(e){
     SRC_DOC=null;$('srcTabs').style.display='none';setSrcView('text');
     $('inHint').innerHTML=tt('in_hint');$('inHint').style.display='';
@@ -433,6 +440,7 @@ async function setView(v){
   if(!d){setView('prev');return;}
   renderPages($('pdfOutView'),d);
   if(d.residual+d.skipped>0)toast(T[L].t_pdf_warn(d.residual,d.skipped),false,9000);
+  else warnNoText(d);
 }
 
 /* Genera UNA volta il PDF anonimizzato e lo lascia sul server: la stessa copia
@@ -489,6 +497,7 @@ $('dlpdf').onclick=async()=>{
     // residui = valori ancora leggibili nell'output; saltati = valori troppo corti
     // per essere cercati senza devastare il documento. Entrambi restano IN CHIARO.
     if(d.residual+d.skipped>0)toast(T[L].t_pdf_warn(d.residual,d.skipped),false,9000);
+    else if((d.pages_no_text||[]).length)warnNoText(d);
     else toast(tt('t_pdf_ok'));
   }finally{btn.disabled=false;btn.innerHTML=old;}
 };

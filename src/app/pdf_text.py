@@ -45,3 +45,32 @@ def collect_readable_text(doc, redact_annot_type=REDACT_ANNOT):
     except Exception:
         pass
     return "\n".join(parts)
+
+
+# Sotto questa soglia (spazi esclusi) il layer testuale di una pagina e' "quasi
+# vuoto". Valore ripreso dalla PR upstream #105 (OCR_MIN_CHARS), che con questa
+# stessa soglia decideva quali pagine mandare all'OCR.
+MIN_TEXT_CHARS = 40
+
+
+def pages_without_text(doc, min_chars=MIN_TEXT_CHARS):
+    """Numeri di pagina (da 1) che hanno IMMAGINI ma quasi nessun testo estraibile:
+    tipicamente pagine scansionate dentro un PDF misto. L'anonimizzazione lavora sul
+    layer testuale, quindi le PII dentro quelle immagini restano visibili anche nel
+    PDF redatto: l'UI lo deve dire. Una pagina bianca (niente testo, niente
+    immagini) non conta: non c'e' niente da nascondere."""
+    out = []
+    for i, page in enumerate(doc, start=1):
+        try:
+            txt = page.get_text() or ""
+        except Exception:
+            txt = ""
+        if sum(1 for c in txt if not c.isspace()) >= min_chars:
+            continue
+        try:
+            has_images = bool(page.get_images(full=False))
+        except Exception:
+            has_images = False
+        if has_images:
+            out.append(i)
+    return out

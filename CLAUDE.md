@@ -113,6 +113,10 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   `{doc_id, n_pages, residual, skipped}`: l'anteprima a destra e il bottone "Scarica PDF" usano
   **la stessa copia**, quindi guardare il PDF e poi scaricarlo costa **una sola** anonimizzazione
   (il download passa da `/doc/<id>/file.pdf`). `/pdf` resta invariato per chi usa l'API.
+- **PDF misti (pagine scansionate)**: `pdf_text.pages_without_text()` trova le pagine con immagini e
+  < 40 caratteri di testo (soglia della PR upstream #105). Niente OCR: le PII li' dentro restano anche
+  nel PDF redatto, quindi `/preview`, `/analyze`, `/pdf/preview` rispondono `pages_no_text` e `/pdf`
+  manda `X-PII-NoText-Pages`; l'UI mostra l'avviso.
 - **Preferenze di anonimizzazione** → `prefs.json` nella config dir (`EXCLUDED_TAGS`,
   `MAPPING_ENABLED`). File **separato da `config.json`** perché Tauri riscrive quest'ultimo per
   intero quando si cambia porta dallo splash. Precedenza: campo nella richiesta > CLI > env > file.
