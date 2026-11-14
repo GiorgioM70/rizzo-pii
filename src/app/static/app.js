@@ -28,6 +28,18 @@ function newSessionId(){
 let SESSION_ID=(()=>{try{const v=sessionStorage.getItem('pii_session');
   if(v&&/^[A-Za-z0-9_-]{8,64}$/.test(v))return v;}catch{}
   const v=newSessionId();try{sessionStorage.setItem('pii_session',v);}catch{}return v;})();
+/* ---- dove vive il dizionario ----
+   sessionStorage, non localStorage: il dizionario {segnaposto -> valore} e' la chiave
+   per rimettere le PII nel testo e non deve restare in chiaro sul disco dopo la
+   chiusura della finestra. Sopravvive a un ricaricamento della pagina, non a un
+   riavvio dell'app: per tenerlo si scarica il file (pulsante "Scarica dizionario"). */
+const MAP_KEY='pii_map';
+function saveMap(){try{sessionStorage.setItem(MAP_KEY,JSON.stringify(MAP));}catch{}}
+function dropMap(){try{sessionStorage.removeItem(MAP_KEY);}catch{}}
+/* MAP_FOREIGN: MAP non viene dalla numerazione di questa sessione (file caricato, o
+   dizionario delle versioni precedenti trovato nel localStorage). Alla prossima analisi
+   si sostituisce invece di fondersi: i suoi [FULLNAME_1] non sono quelli del server. */
+let MAP_FOREIGN=false;
 function resetSession(){
   const old=SESSION_ID;
   fetch('/session/reset',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -331,9 +343,9 @@ async function run(){
     if(!resp.ok){toast(d.error||tt('t_error'),false);return;}
     if(d.source_text&&file)$('src').value=d.source_text;
     DATA=d;off.clear();
-    // senza dizionario non tocchiamo MAP ne' il localStorage: nessuna chiave nuova nasce
+    // senza dizionario non tocchiamo MAP ne' il sessionStorage: nessuna chiave nuova nasce
     // MAP accumula: i segnaposto della sessione sono univoci, il nuovo testo aggiunge i suoi
-    if(d.mapping_enabled!==false){MAP={...MAP,...d.mapping};localStorage.setItem('pii_map',JSON.stringify(MAP));
+    if(d.mapping_enabled!==false){MAP=MAP_FOREIGN?{...d.mapping}:{...MAP,...d.mapping};MAP_FOREIGN=false;saveMap();
       $('dictInfo').textContent=T[L].dict_session(Object.keys(MAP).length);}
     render();
     toast(T[L].pii_found(d.n_entities,d.n_unique));
@@ -546,7 +558,7 @@ $('dictFile').onchange=e=>{const f=e.target.files[0];if(!f)return;
     // l'intero documento al ripristino, non solo un placeholder.
     const valid=dictKeys.length>0&&dictKeys.every(k=>/^\[.+\]$/.test(k)&&typeof parsed[k]==='string');
     if(!valid){toast(tt('t_json_invalid'),false);return;}
-    MAP=parsed;
+    MAP=parsed;MAP_FOREIGN=true;
     $('dictInfo').textContent=T[L].dict_loaded_n(dictKeys.length);
     toast(tt('t_dict_loaded'));}catch{toast(tt('t_json_invalid'),false);}};
   r.readAsText(f);};
@@ -559,7 +571,7 @@ $('clear').onclick=()=>{$('src').value='';$('pdf').value='';$('dropTxt').innerHT
   $('dictCard').style.display='none';$('ulock').textContent='';
   // la card era solo nascosta: senza queste tre righe il dizionario resta in MAP e su
   // disco, e al riavvio ricompare zitto al posto di quello del documento nuovo
-  MAP={};localStorage.removeItem('pii_map');$('dictInfo').textContent='';
+  MAP={};MAP_FOREIGN=false;dropMap();$('dictInfo').textContent='';
   resetSession();   // documento nuovo da zero: la numerazione riparte da _1
   SRC_DOC=null;OUT_DOC=null;$('pdfSrcView').innerHTML='';$('pdfOutView').innerHTML='';
   $('srcTabs').style.display='none';$('inHint').innerHTML=tt('in_hint');
@@ -704,5 +716,11 @@ async function saveTags(){
 loadTags();
 
 /* recupera dizionario da sessione precedente (dopo applyLang -> testo nella lingua giusta) */
-try{const m=localStorage.getItem('pii_map');if(m){MAP=JSON.parse(m);
+try{const m=sessionStorage.getItem(MAP_KEY);if(m){MAP=JSON.parse(m);
   if(Object.keys(MAP).length)$('dictInfo').textContent=T[L].dict_session(Object.keys(MAP).length);}}catch{}
+/* le versioni precedenti lo lasciavano in chiaro nel localStorage, per sempre: lo si
+   porta (una volta) nella sessione corrente per il ripristino e lo si cancella dal disco */
+try{const old=localStorage.getItem(MAP_KEY);if(old!==null){localStorage.removeItem(MAP_KEY);
+  const o=JSON.parse(old);
+  if(o&&typeof o==='object'&&!Array.isArray(o)&&Object.keys(o).length&&!Object.keys(MAP).length){
+    MAP=o;MAP_FOREIGN=true;saveMap();$('dictInfo').textContent=T[L].dict_loaded_n(Object.keys(MAP).length);}}}catch{}

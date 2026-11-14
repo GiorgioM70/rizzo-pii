@@ -124,7 +124,7 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   `include_mapping`): con off l'anonimizzazione è **definitiva**. Non è cosmetico — `analyze()` non
   costruisce la mappa, la risposta non ha `mapping`, e i segmenti-entità **perdono il campo `t`**
   (altrimenti il dizionario si ricostruirebbe dal payload); l'UI non scrive `pii_map` in
-  localStorage e nasconde il download. La **numerazione resta** (`[FULLNAME_1]` due volte = stesso
+  sessionStorage (dove ora vive il dizionario: muore con la finestra) e nasconde il download. La **numerazione resta** (`[FULLNAME_1]` due volte = stesso
   soggetto): è utile all'LLM e da sola non riporta al valore. UI: switch nella card di input, ambra
   quando è off. `source_text` continua a tornare — è il documento che hai appena mandato tu, non una
   chiave di ripristino.
