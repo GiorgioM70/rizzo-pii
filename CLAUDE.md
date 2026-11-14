@@ -94,6 +94,11 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   `/static/*`, `/assets/*`, `/health`, `GET /config` (sonda di Tauri). `POST /config` con host non di
   loopback richiede `confirm_expose: true` (409 altrimenti); `/port-check` solo su indirizzi locali.
   `PII_REQUIRE_TOKEN=0` spegne solo il token. I test usano `client()` di `tests/test_ora.py`.
+- **Numerazione dei segnaposto per sessione**: campo `session_id` in `/analyze`, `/pdf`,
+  `/pdf/preview` → la numerazione continua tra le analisi (`[IBAN_2]` per un IBAN nuovo, `[IBAN_1]` per
+  uno gia' visto) e il PDF ha gli stessi segnaposto del testo. Stato in memoria (LRU `MAX_SESSIONS`),
+  chiavi HMAC senza valori in chiaro; `POST /session/reset`. Senza `session_id`: comportamento storico.
+  La UI genera l'id (sessionStorage), accumula `MAP` e lo rinnova con "Pulisci".
 - **Anteprima del PDF a video, prima e dopo** — le due colonne mostrano il documento *renderizzato*,
   non solo il testo. A sinistra, appena si carica un PDF: `POST /preview` lo tiene in memoria e
   ritorna testo + numero di pagine, e la card offre due viste (**Anteprima PDF** default, **Testo**).

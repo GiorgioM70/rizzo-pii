@@ -15,6 +15,25 @@ window.fetch = (url, opts={}) => {
 const docUrl = p => p+(p.includes('?')?'&':'?')+'t='+encodeURIComponent(PII_TOKEN);
 let DATA = null;            // ultimo risultato analyze
 let MAP = {};              // {placeholder -> valore} sessione corrente
+/* ---- sessione di numerazione dei segnaposto ----
+   Il server continua la numerazione tra un'analisi e l'altra della stessa sessione
+   ([FULLNAME_3] dopo [FULLNAME_1..2] del documento prima) e MAP accumula i dizionari:
+   il ripristino funziona su tutti i testi della sessione. "Pulisci" ne apre una nuova.
+   L'id vive in sessionStorage: muore con la finestra, come la sessione. */
+function newSessionId(){
+  try{if(crypto.randomUUID)return crypto.randomUUID().replace(/-/g,'');}catch{}
+  const b=new Uint8Array(16);crypto.getRandomValues(b);
+  return Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
+}
+let SESSION_ID=(()=>{try{const v=sessionStorage.getItem('pii_session');
+  if(v&&/^[A-Za-z0-9_-]{8,64}$/.test(v))return v;}catch{}
+  const v=newSessionId();try{sessionStorage.setItem('pii_session',v);}catch{}return v;})();
+function resetSession(){
+  const old=SESSION_ID;
+  fetch('/session/reset',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({session_id:old})}).catch(()=>{});
+  SESSION_ID=newSessionId();try{sessionStorage.setItem('pii_session',SESSION_ID);}catch{}
+}
 const off = new Set();     // label nascoste nella preview
 let L = 'it';              // lingua UI corrente
 let TAGS = [];             // legenda dei tag servita da /settings
@@ -302,10 +321,10 @@ async function run(){
     let resp;
     // override della UI. Se /settings non ha risposto non mandiamo nulla: comanda il server.
     const excl=TAGS_LOADED?[...EXCL]:null;
-    if(file){const fd=new FormData();fd.append('pdf',file);
+    if(file){const fd=new FormData();fd.append('pdf',file);fd.append('session_id',SESSION_ID);
       if(excl){fd.append('exclude_tags',excl.join(','));fd.append('include_mapping',MAPPING?'1':'0');}
       resp=await fetch('/analyze',{method:'POST',body:fd});}
-    else{const body={text};if(excl){body.exclude_tags=excl;body.include_mapping=MAPPING;}
+    else{const body={text,session_id:SESSION_ID};if(excl){body.exclude_tags=excl;body.include_mapping=MAPPING;}
       resp=await fetch('/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify(body)});}
     const d=await resp.json();
@@ -313,7 +332,9 @@ async function run(){
     if(d.source_text&&file)$('src').value=d.source_text;
     DATA=d;off.clear();
     // senza dizionario non tocchiamo MAP ne' il localStorage: nessuna chiave nuova nasce
-    if(d.mapping_enabled!==false){MAP=d.mapping;localStorage.setItem('pii_map',JSON.stringify(MAP));}
+    // MAP accumula: i segnaposto della sessione sono univoci, il nuovo testo aggiunge i suoi
+    if(d.mapping_enabled!==false){MAP={...MAP,...d.mapping};localStorage.setItem('pii_map',JSON.stringify(MAP));
+      $('dictInfo').textContent=T[L].dict_session(Object.keys(MAP).length);}
     render();
     toast(T[L].pii_found(d.n_entities,d.n_unique));
   }catch(e){toast(tt('t_error')+': '+e.message,false);}
@@ -416,10 +437,10 @@ function buildOutPdf(){
   PDF_JOB=(async()=>{
     try{
       let resp;
-      if(file){const fd=new FormData();fd.append('pdf',file);
+      if(file){const fd=new FormData();fd.append('pdf',file);fd.append('session_id',SESSION_ID);
         if(excl)fd.append('exclude_tags',excl.join(','));
           resp=await fetch('/pdf/preview',{method:'POST',body:fd});}
-      else{const body={text};if(excl)body.exclude_tags=excl;
+      else{const body={text,session_id:SESSION_ID};if(excl)body.exclude_tags=excl;
           resp=await fetch('/pdf/preview',{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify(body)});}
       const d=await resp.json();
@@ -539,6 +560,7 @@ $('clear').onclick=()=>{$('src').value='';$('pdf').value='';$('dropTxt').innerHT
   // la card era solo nascosta: senza queste tre righe il dizionario resta in MAP e su
   // disco, e al riavvio ricompare zitto al posto di quello del documento nuovo
   MAP={};localStorage.removeItem('pii_map');$('dictInfo').textContent='';
+  resetSession();   // documento nuovo da zero: la numerazione riparte da _1
   SRC_DOC=null;OUT_DOC=null;$('pdfSrcView').innerHTML='';$('pdfOutView').innerHTML='';
   $('srcTabs').style.display='none';$('inHint').innerHTML=tt('in_hint');
   $('inHint').style.display='';setSrcView('text');setView('prev');

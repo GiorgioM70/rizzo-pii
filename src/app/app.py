@@ -44,6 +44,8 @@ Preferenze di anonimizzazione (precedenza): campo nella richiesta > CLI --exclud
 """
 
 import bisect
+import hashlib
+import hmac
 import os
 import re
 import secrets
@@ -414,7 +416,56 @@ def _norm(s):
     return re.sub(r"\s+", " ", s.strip()).casefold()
 
 
-def analyze(text, excluded=None, mapping_enabled=True):
+# --------------------------------------------------------------------------- #
+# Sessioni di numerazione dei segnaposto
+#
+# Senza sessione ogni analisi ricomincia da [FULLNAME_1]: due documenti analizzati
+# uno dopo l'altro davano lo stesso [FULLNAME_1] a due persone diverse, e la UI
+# sostituiva il dizionario del primo con quello del secondo (il ripristino del
+# primo testo non era piu' possibile). Con un session_id la numerazione CONTINUA:
+# un valore gia' visto nella sessione riprende il suo segnaposto, uno nuovo prende
+# il numero successivo. /pdf e /pdf/preview usano la stessa sessione, quindi il
+# PDF censurato ha gli stessi segnaposto del testo.
+#
+# Lo stato sta in memoria (muore col processo) e NON contiene i valori: la chiave
+# e' un HMAC di (tag, valore normalizzato) con un segreto del processo, cosi' anche
+# con il dizionario disattivato nessuna PII resta nel server tra una richiesta e
+# l'altra. Senza session_id il comportamento e' quello di sempre (API invariata).
+# --------------------------------------------------------------------------- #
+MAX_SESSIONS = 32
+_SESSIONS = OrderedDict()          # session_id -> {"seen": {hmac: ph}, "counters": {}}
+_SESSIONS_LOCK = threading.Lock()
+_SESSION_SECRET = secrets.token_bytes(32)
+_SESSION_RE = re.compile(r"[A-Za-z0-9_-]{8,64}")
+
+
+def _session_key(label, value):
+    msg = f"{label}\0{_norm(value)}".encode("utf-8")
+    return hmac.new(_SESSION_SECRET, msg, hashlib.sha256).hexdigest()
+
+
+def valid_session_id(sid):
+    return isinstance(sid, str) and bool(_SESSION_RE.fullmatch(sid))
+
+
+def _session_state(sid):
+    """Stato della sessione (creato se manca), in cima alla LRU. Va usato col lock."""
+    st = _SESSIONS.get(sid)
+    if st is None:
+        st = {"seen": {}, "counters": {}}
+        _SESSIONS[sid] = st
+        while len(_SESSIONS) > MAX_SESSIONS:
+            _SESSIONS.popitem(last=False)
+    _SESSIONS.move_to_end(sid)
+    return st
+
+
+def reset_session(sid):
+    with _SESSIONS_LOCK:
+        return _SESSIONS.pop(sid, None) is not None
+
+
+def analyze(text, excluded=None, mapping_enabled=True, session_id=None):
     """excluded = tag da NON anonimizzare: le entita' di quel tipo vengono scartate
     prima della fusione, quindi il valore resta in chiaro nel testo di output.
 
@@ -422,7 +473,10 @@ def analyze(text, excluded=None, mapping_enabled=True):
     placeholder->valore, e i segmenti-entita' non riportano il testo originale
     (che altrimenti permetterebbe di ricostruire il dizionario dalla risposta).
     La numerazione dei placeholder resta: dice che due occorrenze sono lo stesso
-    soggetto, ma da sola non fa risalire al valore."""
+    soggetto, ma da sola non fa risalire al valore.
+
+    session_id -> numerazione continua tra piu' analisi (vedi "Sessioni" sopra).
+    `mapping` contiene comunque solo i segnaposto presenti in QUESTO testo."""
     excluded = set(excluded or ())
     model_ents, n_chunks = detect_model(text)
     # il modello taglia i minuti delle ore: la regex dell'ora completa SOLO le sue span TIME
@@ -433,19 +487,24 @@ def analyze(text, excluded=None, mapping_enabled=True):
     kept = _merge(cands, text)
 
     # ID reversibili: stesso (label, valore-normalizzato) -> stesso placeholder.
-    counters, seen, mapping = {}, {}, {}
-    for e in kept:
-        val = text[e["start"]:e["end"]]
-        key = (e["label"], _norm(val))
-        if key in seen:
-            e["ph"] = seen[key]
-        else:
-            counters[e["label"]] = counters.get(e["label"], 0) + 1
-            ph = f"[{e['label']}_{counters[e['label']]}]"
-            seen[key] = ph
-            if mapping_enabled:
-                mapping[ph] = val
+    # Con una sessione i contatori e i valori gia' visti vengono da li' (sotto lock:
+    # due richieste concorrenti della stessa sessione non devono darsi lo stesso numero).
+    lock = _SESSIONS_LOCK if session_id else threading.Lock()
+    mapping, used = {}, set()
+    with lock:
+        st = _session_state(session_id) if session_id else {"seen": {}, "counters": {}}
+        counters, seen = st["counters"], st["seen"]
+        for e in kept:
+            val = text[e["start"]:e["end"]]
+            key = _session_key(e["label"], val)
+            if key not in seen:
+                counters[e["label"]] = counters.get(e["label"], 0) + 1
+                seen[key] = f"[{e['label']}_{counters[e['label']]}]"
+            ph = seen[key]
             e["ph"] = ph
+            used.add(ph)
+            if mapping_enabled and ph not in mapping:
+                mapping[ph] = val
 
     # segmenti per la preview + testo anonimizzato + statistiche
     segments, anon, by_label, by_source, pos = [], [], {}, {}, 0
@@ -478,7 +537,7 @@ def analyze(text, excluded=None, mapping_enabled=True):
         "n_chunks": n_chunks,
         "n_chars": len(text),
         "n_entities": len(kept),
-        "n_unique": len(seen),
+        "n_unique": len(used),
         "by_label": dict(sorted(by_label.items(), key=lambda x: -x[1])),
         "by_source": by_source,
         "excluded_tags": sorted(excluded),
@@ -648,11 +707,15 @@ def analyze_route():
             return jsonify({"error": f"Impossibile leggere il file: {e}"}), 400
         raw_excl = request.form.get("exclude_tags")
         raw_map = request.form.get("include_mapping")
+        raw_sid = request.form.get("session_id")
     else:
         payload = request.get_json(silent=True) or {}
         text = payload.get("text", "")
         raw_excl = payload.get("exclude_tags")
         raw_map = payload.get("include_mapping")
+        raw_sid = payload.get("session_id")
+    if raw_sid is not None and not valid_session_id(raw_sid):
+        return jsonify({"error": "session_id non valido."}), 400
 
     text = (text or "").strip()
     if not text:
@@ -665,7 +728,7 @@ def analyze_route():
     excl = server_config.parse_tag_list(raw_excl) if raw_excl is not None else default_excl
     keep_map = (server_config.parse_bool(raw_map, default_map)
                 if raw_map is not None else default_map)
-    out = analyze(text, excl, keep_map)
+    out = analyze(text, excl, keep_map, session_id=raw_sid)
     # Il testo originale torna solo col dizionario attivo (l'UI lo rimette nella casella
     # dopo un upload). In modalita' definitiva la risposta non deve contenere nessun
     # valore in chiaro: la chiave manca del tutto, come il valore nei segmenti (#118).
@@ -727,10 +790,14 @@ def _build_anonymized_pdf():
         except Exception as e:                       # PDF corrotto / protetto
             raise _ReqError(f"Impossibile leggere il file: {e}")
         raw_excl = request.form.get("exclude_tags")
+        raw_sid = request.form.get("session_id")
     else:
         payload = request.get_json(silent=True) or {}
         name, data, text = "", b"", payload.get("text", "")
         raw_excl = payload.get("exclude_tags")
+        raw_sid = payload.get("session_id")
+    if raw_sid is not None and not valid_session_id(raw_sid):
+        raise _ReqError("session_id non valido.")
 
     text = (text or "").strip()
     if not text:
@@ -742,7 +809,8 @@ def _build_anonymized_pdf():
     excl = (server_config.parse_tag_list(raw_excl) if raw_excl is not None
             else _get_prefs()[0])
     # mapping_enabled=True e' interno: il risultato non esce da questa funzione.
-    res = analyze(text, excl, mapping_enabled=True)
+    # stessa sessione dell'analisi a video -> stessi segnaposto nel PDF
+    res = analyze(text, excl, mapping_enabled=True, session_id=raw_sid)
     if not res["mapping"]:
         raise _ReqError("Nessuna PII trovata: non c'e' niente da "
                         "anonimizzare in questo documento.", 422)
@@ -851,6 +919,15 @@ def doc_file(doc_id):
     resp = app.response_class(d["pdf"], mimetype="application/pdf")
     resp.headers["Content-Disposition"] = f"attachment; filename={d['name']}"
     return resp
+
+
+@app.route("/session/reset", methods=["POST"])
+def session_reset():
+    """Dimentica la numerazione di una sessione (la UI lo chiama con "Pulisci")."""
+    sid = (request.get_json(silent=True) or {}).get("session_id")
+    if not valid_session_id(sid):
+        return jsonify({"error": "session_id non valido."}), 400
+    return jsonify({"ok": True, "existed": reset_session(sid)})
 
 
 # --------------------------------------------------------------------------- #
