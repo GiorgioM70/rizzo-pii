@@ -52,6 +52,7 @@ import secrets
 import sys
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import fitz  # PyMuPDF
@@ -163,6 +164,16 @@ def load_model():
             )
             print("Modello pronto.")
     return nlp
+
+
+# L'inferenza gira sempre sullo STESSO thread, qualunque thread serva la richiesta
+# (issue upstream #139, PR #141). torch crea il suo pool OpenMP
+# (torch.get_num_threads() - 1 thread) per ogni thread che lo chiama, e su Windows non
+# lo libera quando quel thread finisce: con app.run(threaded=True), che usa un thread
+# nuovo per richiesta, ogni /analyze lasciava un pool intero, senza limite. Con un
+# worker fisso il pool nasce una volta sola. Le richieste in parallelo fanno la fila
+# qui, ma sulla CPU torch usa gia' tutti i core.
+_INFERENZA = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inferenza")
 
 
 if os.environ.get("PII_PRELOAD_MODEL", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -327,7 +338,7 @@ def detect_model(text):
     chunks = chunk_text(text)
     ents = []
     if chunks:
-        results = load_model()([c for c, _ in chunks])
+        results = _INFERENZA.submit(load_model(), [c for c, _ in chunks]).result()
         if isinstance(results, dict):                 # singolo chunk -> normalizza
             results = [results]
         for (_, off), res in zip(chunks, results):
