@@ -16,7 +16,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 
-from test_ora import APP  # noqa: E402  (stesso caricamento di app coi pesi finti)
+from test_ora import APP, client  # noqa: E402  (stesso caricamento di app coi pesi finti)
 
 TESTO = "Mario Rossi, IBAN IT60X0542811101000000123456"
 
@@ -25,7 +25,7 @@ TESTO = "Mario Rossi, IBAN IT60X0542811101000000123456"
 class SourceText(unittest.TestCase):
     def _post(self, **extra):
         with patch.object(APP, "nlp", lambda chunks: [[] for _ in chunks]):
-            r = APP.app.test_client().post("/analyze", json={"text": TESTO, **extra})
+            r = client().post("/analyze", json={"text": TESTO, **extra})
         self.assertEqual(r.status_code, 200)
         return r.get_json()
 

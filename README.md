@@ -391,7 +391,7 @@ Whichever way you started it, the process is a plain HTTP service — see
 
 ```bash
 curl localhost:5005/health                      # 200 = model loaded and ready
-curl -X POST localhost:5005/analyze -H 'Content-Type: application/json' \
+curl -H "X-PII-Token: $PII_API_TOKEN" -X POST localhost:5005/analyze -H 'Content-Type: application/json' \
      -d '{"text": "Mario Rossi, CF RSSMRA85M01H501Q"}'
 ```
 
@@ -458,13 +458,23 @@ and **restore** the real values from the response. Input: pasted text, a **PDF**
 
 The same process is a plain HTTP service, so you can use it as a sidecar in a fail-closed pipeline:
 
+**The API is locked to this machine and to a session token** (upstream issue #112). Requests whose
+`Host` or `Origin` is not loopback (or the bind address) get `403`: this stops DNS-rebinding and
+cross-site requests from any web page open in your browser. Every endpoint except `/`, `/static/*`,
+`/assets/*`, `/health` and `GET /config` also needs the header `X-PII-Token`. The UI gets the token
+inside the page; for scripts, fix it yourself with `PII_API_TOKEN` when you start the server
+(`PII_API_TOKEN=$(openssl rand -hex 24) python src/app/serve.py`). Reaching the server from another
+host (`--host 0.0.0.0`) needs its name/IP in `PII_ALLOWED_HOSTS`; `POST /config` with a non-loopback
+host is refused unless the body carries `"confirm_expose": true`. `PII_REQUIRE_TOKEN=0` turns off only
+the token (Host/Origin checks stay), for setups with their own authentication in front.
+
 ```bash
 curl localhost:5005/health                      # readiness, no inference: 200 = model loaded
-curl -X POST localhost:5005/analyze -H 'Content-Type: application/json' \
+curl -H "X-PII-Token: $PII_API_TOKEN" -X POST localhost:5005/analyze -H 'Content-Type: application/json' \
      -d '{"text": "Mario Rossi, IBAN IT60X0542811101000000123456"}'
-curl -F "file=@atto.pdf" localhost:5005/analyze  # .pdf, .md, .txt
-curl -F "file=@atto.pdf" localhost:5005/pdf -o atto_anonimizzato.pdf   # anonymized PDF back
-curl localhost:5005/settings                     # tag legend, excluded tags, dictionary state
+curl -H "X-PII-Token: $PII_API_TOKEN" -F "file=@atto.pdf" localhost:5005/analyze  # .pdf, .md, .txt
+curl -H "X-PII-Token: $PII_API_TOKEN" -F "file=@atto.pdf" localhost:5005/pdf -o atto_anonimizzato.pdf   # anonymized PDF back
+curl -H "X-PII-Token: $PII_API_TOKEN" localhost:5005/settings                     # tag legend, excluded tags, dictionary state
 ```
 
 ### Get the anonymized document back as a PDF
@@ -513,9 +523,9 @@ disappears, so the map cannot be rebuilt from the payload either). The numbering
 ```bash
 python src/app/app.py --no-mapping                  # CLI
 PII_MAPPING=0 python src/app/serve.py               # env
-curl -X POST localhost:5005/settings -H 'Content-Type: application/json' \
+curl -H "X-PII-Token: $PII_API_TOKEN" -X POST localhost:5005/settings -H 'Content-Type: application/json' \
      -d '{"mapping_enabled": false}'                # persisted to prefs.json
-curl -X POST localhost:5005/analyze -H 'Content-Type: application/json' \
+curl -H "X-PII-Token: $PII_API_TOKEN" -X POST localhost:5005/analyze -H 'Content-Type: application/json' \
      -d '{"text": "…", "include_mapping": false}'   # per-request override
 ```
 
@@ -526,9 +536,9 @@ detected, just not replaced), or set it outside the UI:
 ```bash
 python src/app/app.py --exclude-tags AMOUNT,AGE     # CLI
 PII_EXCLUDE_TAGS=AMOUNT,AGE python src/app/serve.py # env
-curl -X POST localhost:5005/settings -H 'Content-Type: application/json' \
+curl -H "X-PII-Token: $PII_API_TOKEN" -X POST localhost:5005/settings -H 'Content-Type: application/json' \
      -d '{"excluded_tags": ["AMOUNT"]}'             # persisted to prefs.json
-curl -X POST localhost:5005/analyze -H 'Content-Type: application/json' \
+curl -H "X-PII-Token: $PII_API_TOKEN" -X POST localhost:5005/analyze -H 'Content-Type: application/json' \
      -d '{"text": "…", "exclude_tags": ["AMOUNT"]}' # per-request override
 ```
 

@@ -87,6 +87,13 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   `POST /analyze`, `POST /pdf`, `POST /preview`, `POST /pdf/preview`, `GET /doc/<id>/page/<n>.png`,
   `GET /doc/<id>/file.pdf`, `GET/POST /settings` (alias storico `/tags`), `GET/POST /config`,
   `GET /port-check`; CLI `--host`/`--port`/`--exclude-tags`/`--no-mapping`.
+- **Protezione del server locale** (`local_guard.py`, issue upstream #112): `Host`/`Origin` non di
+  loopback (o dell'host di bind, o in `PII_ALLOWED_HOSTS`) → 403 (DNS rebinding, CSRF). Token di
+  sessione per processo (`PII_API_TOKEN` per fissarlo) iniettato nella pagina (`<meta name="pii-token">`):
+  la UI lo manda in `X-PII-Token`, `<img>`/download di `/doc/...` in `?t=`. Liberi dal token solo `/`,
+  `/static/*`, `/assets/*`, `/health`, `GET /config` (sonda di Tauri). `POST /config` con host non di
+  loopback richiede `confirm_expose: true` (409 altrimenti); `/port-check` solo su indirizzi locali.
+  `PII_REQUIRE_TOKEN=0` spegne solo il token. I test usano `client()` di `tests/test_ora.py`.
 - **Anteprima del PDF a video, prima e dopo** — le due colonne mostrano il documento *renderizzato*,
   non solo il testo. A sinistra, appena si carica un PDF: `POST /preview` lo tiene in memoria e
   ritorna testo + numero di pagine, e la card offre due viste (**Anteprima PDF** default, **Testo**).

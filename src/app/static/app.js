@@ -1,4 +1,18 @@
 const $ = id => document.getElementById(id);
+/* ---- token di sessione (protezione del server locale, vedi local_guard.py) ----
+   Arriva dentro la pagina e va rimandato a ogni chiamata all'API: senza, il server
+   risponde 403. fetch() verso il proprio server lo porta nell'header; <img> e i
+   download di /doc/... non possono, quindi lo portano in query (docUrl). */
+const PII_TOKEN = (document.querySelector('meta[name="pii-token"]')||{}).content||'';
+const _fetch = window.fetch.bind(window);
+window.fetch = (url, opts={}) => {
+  const same = typeof url==='string' && url.startsWith('/');
+  if(!same) return _fetch(url, opts);
+  const h = new Headers(opts.headers||{});
+  h.set('X-PII-Token', PII_TOKEN);
+  return _fetch(url, {...opts, headers:h});
+};
+const docUrl = p => p+(p.includes('?')?'&':'?')+'t='+encodeURIComponent(PII_TOKEN);
 let DATA = null;            // ultimo risultato analyze
 let MAP = {};              // {placeholder -> valore} sessione corrente
 const off = new Set();     // label nascoste nella preview
@@ -61,6 +75,7 @@ const T = {
   cfg_check:"Verifica porta", cfg_save:"Salva", cfg_cancel:"Annulla",
   cfg_available:"Porta disponibile ✓", cfg_in_use:"Porta occupata ✗",
   cfg_saved:"Configurazione salvata (riavvia per applicare)",
+  cfg_expose_confirm:h=>`Con l'indirizzo ${h} il server e i documenti diventano raggiungibili da altri computer della rete, senza cifratura. Confermi?`,
   cfg_restart_note:"Le modifiche avranno effetto al prossimo avvio.",
   tg_title:"Tag da anonimizzare",
   tg_sub:"Deseleziona i tipi che vuoi <b>lasciare in chiaro</b>: verranno comunque rilevati, ma non sostituiti da un placeholder.",
@@ -126,6 +141,7 @@ const T = {
   cfg_check:"Check port", cfg_save:"Save", cfg_cancel:"Cancel",
   cfg_available:"Port available ✓", cfg_in_use:"Port in use ✗",
   cfg_saved:"Config saved (restart to apply)",
+  cfg_expose_confirm:h=>`With address ${h} the server and your documents become reachable from other computers on the network, unencrypted. Confirm?`,
   cfg_restart_note:"Changes take effect on next startup.",
   tg_title:"Tags to anonymize",
   tg_sub:"Untick the types you want to <b>leave in clear text</b>: they are still detected, but not replaced by a placeholder.",
@@ -197,7 +213,7 @@ function renderPages(el,doc){
     const pg=document.createElement('div');pg.className='pg';
     const im=document.createElement('img');
     im.loading='lazy';im.alt=(i+1)+' / '+doc.n_pages;   // alt = pagina: se il render manca si vede quale
-    im.src=`/doc/${doc.doc_id}/page/${i}.png`;
+    im.src=docUrl(`/doc/${doc.doc_id}/page/${i}.png`);
     pg.appendChild(im);
     const n=document.createElement('span');n.className='pgn';
     n.textContent=(i+1)+' / '+doc.n_pages;pg.appendChild(n);
@@ -435,7 +451,7 @@ $('dlpdf').onclick=async()=>{
     const d=await buildOutPdf();
     if(!d)return;
     const a=document.createElement('a');
-    a.href='/doc/'+d.doc_id+'/file.pdf';
+    a.href=docUrl('/doc/'+d.doc_id+'/file.pdf');
     a.download=d.filename||'documento_anonimizzato.pdf';a.click();
     // residui = valori ancora leggibili nell'output; saltati = valori troppo corti
     // per essere cercati senza devastare il documento. Entrambi restano IN CHIARO.
@@ -577,8 +593,13 @@ async function checkPort(){
 async function saveConfig(){
   const h=$('cfgHost').value.trim(),p=parseInt($('cfgPort').value);
   if(!p||p<1024||p>65535){toast(tt('cfg_in_use'),false);return;}
-  await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({host:h,port:p})});
+  // fuori dal loopback il server (e i documenti) diventano raggiungibili dalla rete:
+  // il server lo accetta solo con confirm_expose, che chiediamo qui esplicitamente
+  const loop=/^(localhost|127(\.\d{1,3}){3}|::1|\[::1\])$/i.test(h);
+  if(!loop && !confirm(T[L].cfg_expose_confirm(h)))return;
+  const r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({host:h,port:p,confirm_expose:!loop})});
+  if(!r.ok){let m='';try{m=(await r.json()).error||'';}catch{}toast(m||tt('cfg_in_use'),false);return;}
   toast(tt('cfg_saved'));
   closeConfig();
 }

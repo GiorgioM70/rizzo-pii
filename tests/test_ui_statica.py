@@ -14,13 +14,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 
-from test_ora import APP  # noqa: E402
+from test_ora import APP, client  # noqa: E402
 
 
 @unittest.skipIf(APP is None, "app.py non importabile (flask/fitz assenti)")
 class UiStatica(unittest.TestCase):
     def setUp(self):
-        self.c = APP.app.test_client()
+        self.c = client()
 
     def test_index_con_versione_e_risorse(self):
         r = self.c.get("/", headers={"Host": "127.0.0.1:5005"})

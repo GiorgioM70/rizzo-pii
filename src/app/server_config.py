@@ -24,8 +24,10 @@ E' un file separato di proposito: Tauri riscrive config.json per intero quando s
 cambia la porta dallo splash, e sovrascriverebbe qualunque altra chiave.
 """
 
+import ipaddress
 import json
 import os
+import re
 import socket
 import sys
 from pathlib import Path
@@ -59,6 +61,22 @@ def load_config() -> dict:
         except (json.JSONDecodeError, OSError):
             pass
     return {}
+
+
+_HOSTNAME_RE = re.compile(r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)")
+
+
+def valid_host(host: str) -> bool:
+    """Indirizzo IP (v4/v6) o nome host DNS valido: niente spazi, URL o porte."""
+    h = (host or "").strip()
+    if not h or len(h) > 253:
+        return False
+    try:
+        ipaddress.ip_address(h.strip("[]"))
+        return True
+    except ValueError:
+        pass
+    return all(_HOSTNAME_RE.fullmatch(p) for p in h.rstrip(".").split("."))
 
 
 def save_config(host: str, port: int):

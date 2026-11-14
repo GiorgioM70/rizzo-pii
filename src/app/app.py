@@ -56,6 +56,7 @@ import fitz  # PyMuPDF
 from flask import (Flask, jsonify, render_template_string, request,
                    send_from_directory)
 
+import local_guard
 import pdf_export
 import pdf_text
 import server_config
@@ -488,6 +489,31 @@ def analyze(text, excluded=None, mapping_enabled=True):
 # Endpoints
 # --------------------------------------------------------------------------- #
 # --------------------------------------------------------------------------- #
+# Protezione del server locale (Host/Origin + token di sessione): vedi local_guard.
+# BIND_HOST e' l'host su cui il server ascolta; gli entry point lo riallineano
+# dopo aver letto la CLI. Serve a sapere quali Host ammettere oltre al loopback.
+# --------------------------------------------------------------------------- #
+BIND_HOST = server_config.resolve()[0]
+
+
+@app.before_request
+def _guard():
+    err = local_guard.check(request.method, request.path, request.headers,
+                            request.args, BIND_HOST)
+    if err is not None:
+        status, msg = err
+        return jsonify({"error": msg}), status
+    return None
+
+
+@app.after_request
+def _security_headers(resp):
+    for k, v in local_guard.SECURITY_HEADERS.items():
+        resp.headers.setdefault(k, v)
+    return resp
+
+
+# --------------------------------------------------------------------------- #
 # UI (single page): HTML, CSS e JS stanno in static/ (index.html, app.css, app.js).
 # index.html e' letto una volta all'avvio; __VERSION__ viene sostituito al volo.
 # --------------------------------------------------------------------------- #
@@ -496,7 +522,9 @@ with open(os.path.join(STATIC_DIR, "index.html"), encoding="utf-8") as _f:
 
 
 def _page():
-    return PAGE.replace("__VERSION__", APP_VERSION)
+    # il token di sessione arriva alla UI solo dentro la pagina (vedi local_guard)
+    return (PAGE.replace("__VERSION__", APP_VERSION)
+                .replace("__TOKEN__", local_guard.API_TOKEN))
 
 
 @app.route("/")
@@ -887,17 +915,30 @@ def config_post():
         return jsonify({"error": "Porta non valida."}), 400
     if not (1024 <= port <= 65535):
         return jsonify({"error": "La porta deve essere tra 1024 e 65535."}), 400
+    if not server_config.valid_host(host):
+        return jsonify({"error": "Indirizzo non valido."}), 400
+    # Un host diverso dal loopback (0.0.0.0, un IP di LAN) espone i documenti alla
+    # rete, in HTTP in chiaro: si salva solo con una conferma ESPLICITA nella richiesta.
+    if not local_guard.is_loopback(host) and data.get("confirm_expose") is not True:
+        return jsonify({"error": "Esporre il server fuori da questo computer richiede "
+                                 "una conferma esplicita.",
+                        "code": "confirm_expose"}), 409
     server_config.save_config(host, port)
     return jsonify({"ok": True, "host": host, "port": port})
 
 
 @app.route("/port-check")
 def port_check():
-    host = request.args.get("host", server_config.DEFAULT_HOST)
+    host = request.args.get("host", server_config.DEFAULT_HOST).strip()
     try:
         port = int(request.args.get("port", server_config.DEFAULT_PORT))
     except (ValueError, TypeError):
         return jsonify({"available": False})
+    # solo gli indirizzi su cui questo server potrebbe ascoltare: niente sonda di
+    # porte su indirizzi arbitrari
+    if not (local_guard.is_loopback(host) or local_guard.is_wildcard(host)
+            or host == BIND_HOST):
+        return jsonify({"error": "Indirizzo non ammesso per la verifica."}), 400
     return jsonify({"available": server_config.port_available(host, port)})
 
 
@@ -933,6 +974,7 @@ if __name__ == "__main__":
         print(f"ERRORE: porta {_port} occupata su {_host}")
         sys.exit(server_config.EXIT_PORT_CONFLICT)
 
+    BIND_HOST = _host
     load_model()   # come prima del lazy loading: il server parte a modello caricato
     print(f"Server su http://{_host}:{_port}")
     try:

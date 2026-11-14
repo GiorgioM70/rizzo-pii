@@ -29,6 +29,9 @@ services:
     environment:
       PII_HOST: 0.0.0.0
       PII_PORT: 5005
+      # Token per chi usa l'API da script (header X-PII-Token): senza, ne viene
+      # generato uno casuale a ogni avvio e lo conosce solo la UI.
+      # PII_API_TOKEN: cambiami
       # Nessuna chiamata a Hugging Face a runtime: il modello e' nell'immagine.
       HF_HUB_OFFLINE: 1
       TRANSFORMERS_OFFLINE: 1
