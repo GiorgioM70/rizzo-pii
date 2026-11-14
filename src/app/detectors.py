@@ -90,6 +90,52 @@ def luhn_ok(s):
 #                       IBAN/PIVA/carta -> servono i numeri giusti per non avere falsi positivi).
 #   strict=False     -> si redige comunque (forma molto specifica, es. CF: meglio nascondere);
 #                       validated=True solo se il checksum passa (mette il ✓).
+_PHONE_SEP = r"[ \t .\-]"
+_PHONE_RX = re.compile(
+    r"(?<![\w.+(])(?:"
+    # internazionale: +39 / 0039 / (+39) / (39), poi il numero (prefisso di zona
+    # facoltativo tra parentesi, gruppi da 1 a 4 cifre)
+    r"(?P<intl>(?:\+|00)\d{1,3}|\(\+?\d{1,3}\))" + _PHONE_SEP + r"?"
+    r"(?P<rest>(?:\(\d{1,4}\)" + _PHONE_SEP + r"?)?\d{1,4}(?:" + _PHONE_SEP + r"?\d{1,4}){1,5})"
+    # nazionale italiano: cellulare 3xx o fisso 0x.. (anche "(011)")
+    r"|(?P<nat>(?:3\d{2}|\(0\d{1,3}\)|0\d{1,3})(?:" + _PHONE_SEP + r"?\d{2,5}){1,4})"
+    r")(?!\w)(?![.\-]\d)")
+
+# una data scritta con punti o trattini ("01.02.2024", "03-04-25") ha la stessa
+# forma di un fisso a gruppi: va esclusa esplicitamente
+_PHONE_DATE = re.compile(r"\(?\d{1,2}\)?[ .\-]\d{1,2}[ .\-]\d{2,4}")
+
+
+def _digits(s):
+    return sum(c.isdigit() for c in s)
+
+
+def _it_national_ok(num):
+    """Numero nazionale italiano: cellulare 3xx di 9-10 cifre, fisso 0x di 6-11."""
+    d = "".join(c for c in num if c.isdigit())
+    if d.startswith("3"):
+        return 9 <= len(d) <= 10
+    if d.startswith("0"):
+        return 6 <= len(d) <= 11
+    return False
+
+
+def _phone_shape_ok(m):
+    """Filtro sul match di _PHONE_RX: conta le cifre (la regex non sa contarle) e
+    scarta le date. Non e' un checksum: il candidato resta non validato."""
+    if m.group("intl"):
+        cc = "".join(c for c in m.group("intl") if c.isdigit())
+        rest = m.group("rest")
+        if cc == "39":
+            return _it_national_ok(rest)
+        n = _digits(rest)
+        return 6 <= n <= 12 and len(cc) + n <= 15
+    nat = m.group("nat")
+    if _PHONE_DATE.fullmatch(nat):
+        return False
+    return _it_national_ok(nat)
+
+
 DETECTORS = [
     ("EMAIL",
      re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"),
@@ -129,12 +175,14 @@ DETECTORS = [
     ("PIVA",
      re.compile(r"(?<!\d)\d{11}(?!\d)"),
      piva_ok, True),
-    # Telefono: al gruppo dei separatori si aggiunge il trattino, usatissimo sia
-    # sul cellulare ("333-123-4567") sia sul fisso ("010-2471234").
-    ("TELEPHONENUM",
-     re.compile(r"(?<![\w.])(?:\+39[\s.\-]?)?(?:3\d{2}[\s.\-]?\d{3}[\s.\-]?\d{3,4}"
-                r"|0\d{1,3}[\s.\-]?\d{5,8})(?![\w])"),
-     None, True),
+    # Telefono: forma e confini qui, conteggio delle cifre in _phone_shape_ok().
+    # Copre: cellulare e fisso italiani in qualunque raggruppamento ("333 12 34 567",
+    # "02 1234 5678", "011 123 45 67"), prefisso tra parentesi ("(011) 1234567",
+    # "(+39) 333 1234567"), prefisso internazionale con + o 00 ("+41 79 123 45 67",
+    # "0044 20 7946 0958", "+1 (555) 123-4567"). Separatori: spazio, tab, spazio
+    # unificatore, punto, trattino; mai l'a-capo (una colonna di numeri in tabella
+    # non e' un telefono). Il "/" resta fuori: e' il separatore delle date.
+    ("TELEPHONENUM", _PHONE_RX, None, True),
     ("AMOUNT",
      re.compile(r"(?:€|EUR|euro)\s?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})?"
                 r"|\d{1,3}(?:\.\d{3})*,\d{2}\s?(?:€|EUR|euro)", re.IGNORECASE),
@@ -324,6 +372,8 @@ def detect_regex(text):
     for label, rx, validator, strict in DETECTORS:
         for m in rx.finditer(text):
             start, end = m.start(), m.end()
+            if label == "TELEPHONENUM" and not _phone_shape_ok(m):
+                continue
             if label == "URL":
                 while end > start and text[end - 1] in _URL_TRAIL:
                     end -= 1
