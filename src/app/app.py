@@ -83,6 +83,15 @@ def _resource_path(rel):
 # Metti None per usare AUTOMATICAMENTE l'ultima versione `-v*` disponibile.
 APP_MODEL_VERSION = "1.5.0"
 
+# Offline sempre, come nel Docker (HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE): il
+# modello e' una cartella locale e i documenti non devono mai causare traffico
+# verso Hugging Face (controllo versioni, telemetria, file mancanti). Va fissato
+# PRIMA di importare transformers/huggingface_hub, che leggono la variabile al
+# caricamento: qui e' in tempo perche' load_model() li importa pigramente.
+# setdefault: chi vuole davvero la rete lo dichiara con HF_HUB_OFFLINE=0.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 # Dentro l'exe il modello e' impacchettato come "pii_model" (vedi build.spec).
 # In sviluppo: pin sopra -> auto-ultima versione -> vecchio non versionato -> legacy.
 # Override puntuale a runtime: env PII_MODEL_DIR.

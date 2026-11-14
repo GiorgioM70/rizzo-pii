@@ -87,6 +87,9 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   `POST /analyze`, `POST /pdf`, `POST /preview`, `POST /pdf/preview`, `GET /doc/<id>/page/<n>.png`,
   `GET /doc/<id>/file.pdf`, `GET/POST /settings` (alias storico `/tags`), `GET/POST /config`,
   `GET /port-check`; CLI `--host`/`--port`/`--exclude-tags`/`--no-mapping`.
+- **Offline sempre**: `app.py` fa `os.environ.setdefault` di `HF_HUB_OFFLINE=1` e
+  `TRANSFORMERS_OFFLINE=1` prima di importare transformers (come il Docker; `HF_HUB_OFFLINE=0` per
+  riattivare la rete).
 - **Protezione del server locale** (`local_guard.py`, issue upstream #112): `Host`/`Origin` non di
   loopback (o dell'host di bind, o in `PII_ALLOWED_HOSTS`) → 403 (DNS rebinding, CSRF). Token di
   sessione per processo (`PII_API_TOKEN` per fissarlo) iniettato nella pagina (`<meta name="pii-token">`):
@@ -159,7 +162,8 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   → `422`, non un PDF "anonimizzato" che non lo è (caso tipico: scansione, serve OCR → punti 2-4
   della issue). Nessuna dipendenza dal modello: `pdf_export.py` è testabile in isolamento.
 - `serve.py` — entry **headless** (solo Flask, niente browser): è il backend dell'app Tauri; log su
-  `%LOCALAPPDATA%\rizzo-pii\backend.log`. Pre-check porta + `sys.exit(76)` se occupata.
+  `backend.log` nella **cartella dati** di `server_config.config_dir()` (la stessa di `config.json`,
+  mai nella home; anche `tauri.log` di lib.rs). Pre-check porta + `sys.exit(76)` se occupata.
   `desktop_app.py` — entry PyInstaller legacy (apre il browser); stesso pre-check.
   `assets/` — mascotte (il riccio) + icone. `smoke_app.py`, `make_test_pdf.py`.
 

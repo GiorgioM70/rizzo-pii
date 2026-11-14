@@ -49,7 +49,9 @@ Installer **per-utente** (niente admin), in italiano, con shortcut e disinstalla
 
 ### Sviluppo / debug
 - `npx tauri dev` avvia l'app collegata ai sorgenti (ricompila Rust al volo).
-- Log del backend: `%LOCALAPPDATA%\rizzo-pii\backend.log` (il sidecar è windowed, niente console).
+- Log del backend: `backend.log` nella cartella dati dell'app, accanto a `config.json` e `tauri.log`:
+  `%LOCALAPPDATA%\rizzo-pii\` su Windows, `~/Library/Application Support/rizzo-pii/` su macOS,
+  `~/.local/share/rizzo-pii/` su Linux (il sidecar è windowed, niente console).
 - Per rigenerare con un **nuovo modello**: riaddestra (crea `models\rizzo-pii-0.3B-v{VERSION}\`),
   aggiorna il path in **`build_sidecar.spec`** (riga `datas += [("models/rizzo-pii-0.3B-v...", "pii_model")]`),
   poi rifai il passo 1 e il passo 2. Build attuale: **v1.5.0**.
