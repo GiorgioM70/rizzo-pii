@@ -15,7 +15,7 @@ import sys
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF (il nome "fitz" e' deprecato)
 
 import pdf_export as px
 

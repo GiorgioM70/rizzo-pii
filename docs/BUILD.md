@@ -190,8 +190,8 @@ Note specifiche di macOS:
 ```powershell
 python -m venv build_env
 build_env\Scripts\python.exe -m pip install --upgrade pip
-build_env\Scripts\python.exe -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-build_env\Scripts\python.exe -m pip install "transformers==4.57.3" tokenizers safetensors flask pymupdf pyinstaller
+build_env\Scripts\python.exe -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.13.0"
+build_env\Scripts\python.exe -m pip install "transformers==4.57.3" "tokenizers==0.22.2" "safetensors==0.8.0" "flask==3.1.3" "pymupdf==1.28.2" "huggingface_hub==0.36.2" "pyinstaller==6.22.3"
 ```
 
 ### 2. Build dell'eseguibile

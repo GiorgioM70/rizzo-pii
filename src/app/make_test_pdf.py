@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from pathlib import Path
-import fitz
+import pymupdf as fitz
 
 OUT = str(Path(__file__).resolve().parents[2] / "experiments" / "test_doc.pdf")
 doc = fitz.open()

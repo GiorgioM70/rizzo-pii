@@ -23,7 +23,7 @@ MSG = "PDF protetto da password: rimuovi la protezione e riprova."
 
 
 def _pdf(**cifratura):
-    import fitz
+    import pymupdf as fitz
     doc = fitz.open()
     doc.new_page().insert_text((72, 100), "Il Sig. Mario Rossi, residente a Milano.")
     return doc.tobytes(encryption=fitz.PDF_ENCRYPT_AES_256, **cifratura)

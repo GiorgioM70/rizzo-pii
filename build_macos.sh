@@ -39,10 +39,10 @@ command -v npm   >/dev/null || { echo "ERRORE: npm non trovato (installa Node.js
 if [ ! -d "$VENV" ]; then
   python3 -m venv "$VENV"
   "$VENV/bin/pip" install --upgrade pip
-  "$VENV/bin/pip" install torch "transformers==4.57.3" tokenizers safetensors flask pymupdf pyinstaller
+  "$VENV/bin/pip" install "torch==2.13.0" "transformers==4.57.3" "tokenizers==0.22.2" "safetensors==0.8.0" "flask==3.1.3" "pymupdf==1.28.2" "huggingface_hub==0.36.2" "pyinstaller==6.22.3"
 fi
 "$VENV/bin/python" -c "import PyInstaller" 2>/dev/null \
-  || "$VENV/bin/pip" install pyinstaller
+  || "$VENV/bin/pip" install "pyinstaller==6.22.3"
 
 # ---- 2) sidecar PyInstaller -> tauri/src-tauri/backend/pii-backend/pii-backend ----
 rm -rf tauri/src-tauri/backend

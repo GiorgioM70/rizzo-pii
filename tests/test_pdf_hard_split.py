@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "app"))
 
 try:
-    import fitz
+    import pymupdf as fitz
     import pdf_export
 except ImportError:  # PyMuPDF assente: e' una dipendenza dell'app, non del training
     fitz = None

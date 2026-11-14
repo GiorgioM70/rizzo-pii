@@ -49,7 +49,7 @@ Limiti noti (= punti 2-4 della issue #7):
 import re
 import unicodedata
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF (il nome "fitz" e' deprecato)
 import pdf_text
 
 

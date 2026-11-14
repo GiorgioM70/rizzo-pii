@@ -16,7 +16,7 @@ for pkg in ("transformers", "tokenizers", "safetensors", "huggingface_hub", "reg
 datas += [("models/rizzo-pii-0.3B-v1.5.0", "pii_model")]
 datas += [("src/app/assets", "assets")]   # mascotte/icone -> app.py le serve da _resource_path("assets")
 datas += [("src/app/static", "static")]   # UI: index.html + app.css + app.js
-hiddenimports += ["fitz", "flask", "sklearn.utils._typedefs"]
+hiddenimports += ["pymupdf", "fitz", "flask", "sklearn.utils._typedefs"]
 
 # escludi tutto cio' che non serve (riduce dimensione e rumore)
 excludes = [

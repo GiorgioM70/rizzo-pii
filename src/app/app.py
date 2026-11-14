@@ -55,7 +55,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF (il nome "fitz" e' deprecato)
 from flask import (Flask, jsonify, render_template_string, request,
                    send_from_directory)
 
