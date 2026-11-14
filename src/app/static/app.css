@@ -1,0 +1,293 @@
+  :root{
+    --bg:#f5f4f8; --card:#ffffff; --ink:#211f29; --muted:#6c6677; --soft:#9d97a9;
+    --line:#e9e6f1; --line2:#f2f0f7; --brand:#7c3a9e; --brand-dk:#643183;
+    --ok:#1d8a4e; --shadow:0 1px 2px rgba(33,26,48,.05),0 10px 28px rgba(33,26,48,.05);
+    --r:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);overflow-x:hidden;overflow-y:auto;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  /* desktop: altezza = viewport, lo scroll avviene DENTRO i componenti (no effetto zoom-out);
+     su schermi stretti (media query sotto) si sblocca e la pagina scrolla, colonne impilate */
+  .app{max-width:1240px;margin:0 auto;padding:14px 22px 10px;height:100vh;
+       display:flex;flex-direction:column;overflow:hidden}
+
+  /* header */
+  header{display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap;flex:none}
+  .logo{width:46px;height:46px;display:grid;place-items:center;font-size:24px}
+  .logo img{width:100%;height:100%;object-fit:contain;
+            filter:drop-shadow(0 2px 4px rgba(20,28,46,.18))}
+  .empty img{width:128px;height:auto;opacity:.96;margin-bottom:2px}
+  header h1{font-size:19px;margin:0;font-weight:700;letter-spacing:-.01em}
+  header h1 .ver{font-size:11.5px;font-weight:600;color:var(--soft);vertical-align:middle;margin-left:4px}
+  header .tag{font-size:12.5px;color:var(--muted)}
+  .badge{margin-left:auto;display:inline-flex;align-items:center;gap:7px;background:#eaf7ef;
+         color:var(--ok);border:1px solid #cde8d8;border-radius:999px;padding:6px 13px;
+         font-size:12.5px;font-weight:600}
+  .badge .dot{width:7px;height:7px;border-radius:50%;background:var(--ok)}
+  .lang{margin-left:8px;background:#fff;border:1px solid var(--line);border-radius:10px;
+        padding:6px 10px;font:inherit;font-size:12.5px;font-weight:600;color:var(--ink);cursor:pointer}
+  .lang:hover{border-color:#cfd5e0}
+
+  /* stepper / tabs */
+  .tabs{display:flex;gap:8px;margin-bottom:14px;flex:none}
+  .tab{flex:0 0 auto;display:flex;align-items:center;gap:10px;background:var(--card);
+       border:1px solid var(--line);border-radius:12px;padding:11px 16px;cursor:pointer;
+       color:var(--muted);font-weight:600;font-size:14px;transition:.15s;user-select:none}
+  .tab:hover{border-color:#d4d9e4}
+  .tab.on{color:var(--ink);border-color:var(--brand);box-shadow:0 0 0 3px rgba(124,58,158,.13)}
+  .tab .num{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;
+            background:var(--line);color:var(--muted);font-size:12.5px;font-weight:700}
+  .tab.on .num{background:var(--brand);color:#fff}
+  .tab .arrow{color:var(--soft)}
+
+  /* grid (pane "Ripristina") + workspace (pane "Anonimizza") */
+  .grid{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr;gap:16px;flex:1;min-height:0}
+  .workspace{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr;gap:16px;
+             align-items:stretch;flex:1;min-height:0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+        box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden;min-height:0}
+  .card .hd{padding:13px 16px;border-bottom:1px solid var(--line2);display:flex;
+            align-items:center;gap:10px}
+  .card .hd h2{font-size:13px;margin:0;text-transform:uppercase;letter-spacing:.04em;
+               color:var(--muted);font-weight:700}
+  .card .hd .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .card .bd{padding:14px 16px;flex:1;min-height:0;display:flex;flex-direction:column}
+
+  textarea{width:100%;flex:1;min-height:0;resize:none;border:1px solid var(--line);
+           border-radius:10px;padding:13px 14px;font-size:14.5px;line-height:1.6;color:var(--ink);
+           background:#fcfcfe;font-family:inherit}
+  textarea:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(124,58,158,.13)}
+  textarea.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13.5px}
+
+  /* dropzone */
+  .drop{border:1.5px dashed var(--line);border-radius:10px;padding:11px 14px;margin-top:11px;
+        display:flex;align-items:center;gap:11px;color:var(--muted);font-size:13.5px;cursor:pointer;
+        transition:.15s;background:#fcfcfe}
+  .drop:hover,.drop.hot{border-color:var(--brand);background:#f8f4fc;color:var(--ink)}
+  .drop .ic{font-size:18px}
+  .drop b{color:var(--ink)}
+
+  /* buttons */
+  .row{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:12px}
+  button{font:inherit;border:0;border-radius:10px;padding:10px 17px;font-weight:600;font-size:14px;
+         cursor:pointer;display:inline-flex;align-items:center;gap:8px;transition:.15s}
+  .btn{background:var(--brand);color:#fff;box-shadow:0 1px 2px rgba(124,58,158,.22)}
+  .btn:hover{background:var(--brand-dk)}
+  .btn.lg{padding:12px 22px;font-size:15px}
+  .ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}
+  .ghost:hover{border-color:#cfd5e0;background:#fafbfd}
+  button:disabled{opacity:.55;cursor:default}
+  .spin{width:15px;height:15px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;
+        border-radius:50%;animation:sp .7s linear infinite}
+  .ghost .spin{border-color:rgba(124,58,158,.25);border-top-color:var(--brand)}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .hint{color:var(--soft);font-size:12.5px;margin-left:auto}
+
+  /* preview */
+  .seg-tabs{display:inline-flex;background:var(--line2);border-radius:9px;padding:3px}
+  .seg-tabs button{background:transparent;color:var(--muted);padding:5px 12px;font-size:13px;
+                   border-radius:7px;box-shadow:none}
+  .seg-tabs button.on{background:#fff;color:var(--ink);box-shadow:var(--shadow)}
+  .view{flex:1;overflow:auto;border:1px solid var(--line);border-radius:10px;
+        padding:14px;background:#fcfcfe;min-height:0}
+  /* editor (sx) e anteprima/testo (dx): riempiono la card -> stessa altezza, scroll sincronizzato */
+  #src,#anon{flex:1;min-height:0}
+  #pane2 textarea{flex:1;min-height:0}
+
+  /* CON RISULTATO: la pagina scrolla e i componenti hanno altezza fissa generosa (no schiacciamento).
+     Il dizionario va sotto e si raggiunge scrollando la pagina; editor/anteprima scrollano internamente. */
+  .app.has-result{height:auto;overflow:visible}
+  .app.has-result .workspace{flex:none}
+  .app.has-result #src,.app.has-result #anon,.app.has-result .view{flex:none;height:60vh}
+  /* pane "Ripristina": non deve collassare quando l'app e' in modalita' scroll-pagina */
+  #pane2 textarea,#pane2 .view{min-height:60vh}
+
+  /* schermi stretti: la pagina scrolla, una colonna, card impilate con altezze fisse leggibili.
+     DEVE stare dopo le regole flex:1 qui sopra per vincere a parita' di specificita'. */
+  @media(max-width:920px){
+    .grid{grid-template-columns:1fr}
+    .app{height:auto;overflow:visible}
+    .workspace{grid-template-columns:1fr;grid-template-rows:none;flex:none;min-height:auto}
+    #src,#anon,.view,#pane2 textarea{flex:none;height:60vh}
+  }
+  /* render del PDF (pagine PNG servite da /doc/<id>/page/<n>.png).
+     Sfondo scuro come un lettore PDF: le pagine bianche si staccano. */
+  .pdfview{padding:12px;background:#e8e6ef}
+  .pdfview .pg{position:relative;width:calc(100% * var(--z,1));margin:0 auto 12px;background:#fff;
+               border-radius:4px;overflow:hidden;
+               box-shadow:0 1px 3px rgba(33,26,48,.18),0 6px 18px rgba(33,26,48,.10)}
+  .pdfview .pg:last-child{margin-bottom:0}
+  .pdfview .pg img{display:block;width:100%;height:auto;min-height:24px}
+  .pdfview .pgn{position:absolute;right:7px;bottom:7px;background:rgba(28,35,48,.6);color:#fff;
+                font-size:11px;font-weight:700;border-radius:6px;padding:2px 7px;letter-spacing:.02em}
+  /* zoom: pulsanti +/- sticky in alto a destra, ctrl+rotellina fa lo stesso (issue #92).
+     La barra e' a tutta larghezza ma "vuota" (pointer-events:none) cosi' non ruba i click
+     sulla pagina sotto: solo la pillola dei pulsanti li riceve. */
+  .zoomctl{position:sticky;top:0;left:0;z-index:3;display:flex;justify-content:flex-end;
+           pointer-events:none;margin-bottom:8px}
+  .zoomctl .pill{pointer-events:auto;display:flex;align-items:center;gap:1px;
+                 background:rgba(255,255,255,.94);border:1px solid var(--line);border-radius:999px;
+                 padding:3px;box-shadow:0 1px 4px rgba(33,26,48,.15)}
+  .zoomctl button{width:23px;height:23px;border:none;background:transparent;border-radius:999px;
+                  font-size:14px;font-weight:700;color:var(--ink);cursor:pointer;line-height:1;
+                  transition:.12s}
+  .zoomctl button:hover{background:var(--line2)}
+  .zoomctl .zpct{font-size:11px;font-weight:700;color:var(--muted);min-width:36px;text-align:center;
+                 cursor:pointer;user-select:none}
+  .zoomctl .zpct:hover{color:var(--ink)}
+  .pdfbusy{display:flex;align-items:center;justify-content:center;gap:10px;height:100%;
+           color:var(--muted);font-size:13.5px;font-weight:600}
+  .pdfbusy .spin{border-color:rgba(124,58,158,.25);border-top-color:var(--brand)}
+
+  .preview{white-space:pre-wrap;word-wrap:break-word;font-size:14.5px;line-height:1.7}
+  .ph{border-radius:6px;padding:1px 7px 2px;font-weight:600;font-size:12.5px;cursor:help;
+      border:1px solid;white-space:nowrap;display:inline-block;line-height:1.4;
+      transition:.12s}
+  .ph .ck{font-size:10px;opacity:.8;margin-left:3px}
+  .ph.dim{opacity:.25;filter:grayscale(.6)}
+  .empty{color:var(--soft);display:flex;flex-direction:column;align-items:center;justify-content:center;
+         height:100%;gap:9px;text-align:center;font-size:14px}
+  .empty .big{font-size:34px;opacity:.6}
+
+  /* legend / stats */
+  .legend{display:flex;gap:7px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--line2)}
+  .chip{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:999px;
+        padding:4px 11px;font-size:12.5px;font-weight:600;color:var(--ink);cursor:pointer;
+        background:#fff;user-select:none;transition:.12s}
+  .chip:hover{border-color:#cfd5e0}
+  .chip.off{opacity:.4;text-decoration:line-through}
+  .chip .sw{width:10px;height:10px;border-radius:3px}
+  .chip .n{color:var(--muted);font-weight:700}
+  .meta{display:flex;gap:8px;flex-wrap:wrap;padding:0 16px 12px}
+  .stat{background:#f7f8fb;border:1px solid var(--line2);border-radius:9px;padding:6px 11px;
+        font-size:12.5px;color:var(--muted)}
+  .stat b{color:var(--ink);font-weight:700}
+
+  /* mapping table */
+  .tablewrap{max-height:240px;overflow:auto;padding:0 16px 16px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th{position:sticky;top:0;background:#fff;text-align:left;color:var(--soft);font-weight:600;
+     font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;padding:8px 8px;border-bottom:1px solid var(--line)}
+  td{padding:8px 8px;border-bottom:1px solid var(--line2);vertical-align:top}
+  td.k{font-family:ui-monospace,Consolas,monospace;font-weight:600;white-space:nowrap}
+  td.v{word-break:break-word}
+  tr:hover td{background:#fafbfd}
+
+  /* card "Dizionario": a tutta larghezza sotto le due colonne, scrollabile */
+  .dict{margin-top:16px;flex:none}
+  .dict .bd{padding:0;display:block}
+  .dict .meta{padding:13px 16px 6px}
+  .dict .legend{padding:0 16px 12px;border-top:none}
+  .dict .tablewrap{max-height:300px;overflow:auto;padding:0 16px 16px}
+
+  /* reverse panel */
+  .pane{display:none}
+  .pane.on{display:flex;flex-direction:column;flex:1;min-height:0}
+  .callout{display:flex;gap:11px;background:#fff7ed;border:1px solid #fde6c8;border-radius:11px;
+           padding:12px 14px;font-size:13.5px;color:#7a4d12;margin-bottom:14px;flex:none}
+  .callout b{color:#5c3a0d}
+  .callout .ic{font-size:17px}
+
+  /* angolo alto a destra: la lingua resta in linea col badge; l'icona "galleggia" sotto (no shift) */
+  .topright{position:relative;margin-left:8px;display:flex;align-items:center}
+  .info{position:absolute;top:calc(100% + 6px);right:0;display:grid;place-items:center;
+        width:25px;height:25px;border-radius:8px;background:#fff7ed;border:1px solid #fde6c8;
+        font-size:13px;line-height:1;cursor:pointer;user-select:none;transition:.12s}
+  .info:hover{border-color:#f3c98b}
+  .info.open{border-color:#f3c98b;background:#ffedd5}
+  .info .tip{position:absolute;top:calc(100% + 8px);right:0;width:300px;
+             background:#fff;border:1px solid var(--line);border-radius:11px;box-shadow:var(--shadow);
+             padding:12px 14px;font-size:12.5px;font-weight:400;color:#5c4326;line-height:1.55;
+             text-align:left;opacity:0;visibility:hidden;transform:translateY(-4px);
+             transition:.15s;z-index:60;pointer-events:none}
+  .info.open .tip{opacity:1;visibility:visible;transform:translateY(0);pointer-events:auto}
+  .info .tip b{color:var(--ink)}
+  .info .tip a{color:var(--brand);font-weight:700;text-decoration:none;word-break:break-word}
+  .info .tip a:hover{text-decoration:underline}
+  .info .tip::before{content:"";position:absolute;top:-5px;right:8px;width:9px;height:9px;background:#fff;
+                     border-left:1px solid var(--line);border-top:1px solid var(--line);transform:rotate(45deg)}
+
+  /* crediti (footer dell'app) */
+  .credits{flex:none;text-align:center;padding:9px 0 2px;font-size:11.5px;color:var(--soft)}
+  .credits b{color:var(--muted);font-weight:700}
+  .credits .u{color:var(--brand);font-weight:600}
+
+  /* toast */
+  #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
+         background:#1c2330;color:#fff;padding:11px 18px;border-radius:11px;font-size:13.5px;font-weight:600;
+         box-shadow:0 12px 32px rgba(0,0,0,.22);opacity:0;pointer-events:none;transition:.22s;z-index:50;
+         display:flex;align-items:center;gap:9px}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  #toast.ok::before{content:"✓";color:#6ee7a8}
+  .kbd{font-family:ui-monospace,Consolas,monospace;background:#eef1f6;border:1px solid var(--line);
+       border-radius:5px;padding:1px 6px;font-size:11.5px;color:var(--muted)}
+
+  /* config modal */
+  .cfg-overlay{position:fixed;inset:0;background:rgba(33,26,48,.35);z-index:100;
+               display:flex;align-items:center;justify-content:center;opacity:0;
+               visibility:hidden;transition:.18s}
+  .cfg-overlay.open{opacity:1;visibility:visible}
+  .cfg-card{background:#fff;border-radius:16px;box-shadow:0 16px 48px rgba(33,26,48,.18);
+            padding:26px 28px 22px;width:380px;max-width:92vw}
+  .cfg-card h3{margin:0 0 16px;font-size:16px;font-weight:700;display:flex;align-items:center;gap:9px}
+  .cfg-row{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
+  .cfg-row label{font-size:12.5px;font-weight:600;color:var(--muted);text-transform:uppercase;
+                 letter-spacing:.04em}
+  .cfg-row input{border:1px solid var(--line);border-radius:9px;padding:9px 12px;font:inherit;
+                 font-size:14px;color:var(--ink);background:#fcfcfe}
+  .cfg-row input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(124,58,158,.13)}
+  .cfg-status{font-size:12.5px;font-weight:600;padding:7px 11px;border-radius:8px;margin-bottom:14px;
+              display:none}
+  .cfg-status.ok{display:block;background:#eaf7ef;color:var(--ok)}
+  .cfg-status.fail{display:block;background:#fef2f2;color:#b91c1c}
+  .cfg-btns{display:flex;gap:9px;align-items:center}
+  .cfg-note{font-size:11.5px;color:var(--soft);margin-top:12px}
+  .gear{background:none;border:1px solid var(--line);width:30px;height:30px;border-radius:8px;
+        display:grid;place-items:center;font-size:15px;padding:0;cursor:pointer;transition:.12s;
+        margin-left:6px;flex:none}
+  .gear:hover{border-color:#cfd5e0;background:#fafbfd}
+
+  /* switch "Dizionario reversibile" (sotto la dropzone, nella card di input).
+     OFF non e' uno stato di errore ma una modalita' piu' stretta -> ambra, non grigio. */
+  .mapsw{display:flex;align-items:flex-start;gap:12px;margin-top:11px;padding:11px 13px;
+         border:1px solid var(--line);border-radius:11px;background:#fcfcfe;transition:.15s}
+  .mapsw.off{background:#fff7ed;border-color:#fde6c8}
+  /* .tsw e non .sw: .sw e' gia' il quadratino-colore dei chip nella legenda */
+  .tsw{position:relative;width:42px;height:24px;border-radius:999px;background:var(--brand);
+       border:0;padding:0;flex:none;cursor:pointer;transition:.18s;margin-top:1px}
+  .tsw:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+  .tsw .knob{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;
+             background:#fff;transition:.18s;box-shadow:0 1px 3px rgba(0,0,0,.28)}
+  .tsw.off{background:#c2410c}
+  .tsw.off .knob{transform:translateX(18px)}
+  .mapsw .ttl{font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .mapsw .st{font-size:11px;font-weight:800;letter-spacing:.05em;border-radius:999px;
+             padding:2px 8px;background:#f1e9f7;color:var(--brand-dk)}
+  .mapsw.off .st{background:#ffedd5;color:#9a3412}
+  .mapsw .sub{font-size:12.5px;color:var(--muted);line-height:1.45;margin-top:2px}
+  .mapsw.off .sub{color:#7a4d12}
+
+  /* modale "Tag da anonimizzare": legenda dei 23 tag con toggle per tipo */
+  .cfg-card.wide{width:600px}
+  .tg-sub{font-size:12.5px;color:var(--muted);margin:-8px 0 14px;line-height:1.5}
+  .tg-bar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+  .tg-bar .mini{background:#fff;color:var(--muted);border:1px solid var(--line);
+                border-radius:8px;padding:5px 10px;font-size:12.5px;font-weight:600}
+  .tg-bar .mini:hover{border-color:#cfd5e0;color:var(--ink)}
+  .tg-bar .count{margin-left:auto;font-size:12.5px;color:var(--soft);font-weight:600}
+  .tg-list{max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:11px;
+           padding:5px;background:#fcfcfe}
+  .tg-row{display:flex;align-items:flex-start;gap:10px;padding:8px 9px;border-radius:9px;
+          cursor:pointer;user-select:none;transition:.12s}
+  .tg-row:hover{background:#f4f2f9}
+  .tg-row input{margin:3px 0 0;accent-color:var(--brand);width:15px;height:15px;flex:none;cursor:pointer}
+  .tg-row .sw{width:10px;height:10px;border-radius:3px;margin-top:5px;flex:none}
+  .tg-row .txt{min-width:0}
+  .tg-row .nm{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;font-weight:700}
+  .tg-row .ds{font-size:12.5px;color:var(--muted);line-height:1.45}
+  .tg-row .ex{font-size:11.5px;color:var(--soft)}
+  .tg-row.off{opacity:.55}
+  .tg-row.off .nm{text-decoration:line-through}

@@ -77,7 +77,7 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   codice di uscita `EXIT_PORT_CONFLICT = 76`: i 3 entry point escono con 76 se la porta è occupata
   **prima di caricare il modello** (evita secondi sprecati). Tauri riconosce il codice 76 e mostra
   il form di configurazione nello splash screen.
-- `app.py` — server Flask + **UI**: testo, PDF o file `.md`/`.txt`, chunking con overlap, offset
+- `app.py` — server Flask + **UI** (HTML/CSS/JS in `static/`: `index.html`, `app.css`, `app.js`; modello caricato **pigro** con `load_model()`, chiamato dagli entry point prima di `app.run()`, sotto gunicorn con `PII_PRELOAD_MODEL=1`): testo, PDF o file `.md`/`.txt`, chunking con overlap, offset
   globali + dedup. Anonimizzazione **reversibile** (ogni PII → `[FULLNAME_1]`/`[IBAN_1]`… +
   dizionario locale; tab "Ripristina"). Affianca al modello una **rete regex/checksum** (EMAIL/
   TELEFONO/IBAN/CF/PIVA/carta/importo/targa/**URL**; IBAN/CF/PIVA/carta validati con checksum, che ha

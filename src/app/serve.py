@@ -64,8 +64,11 @@ if not server_config.port_available(HOST, PORT):
     print(f"[serve] ERRORE: porta {PORT} occupata su {HOST}")
     sys.exit(server_config.EXIT_PORT_CONFLICT)
 
-# l'import carica il modello (puo' richiedere alcuni secondi)
-from app import app  # noqa: E402
+from app import app, load_model  # noqa: E402
+
+# carica il modello PRIMA di aprire il server (puo' richiedere alcuni secondi):
+# Tauri considera il backend pronto quando la porta risponde.
+load_model()
 
 if __name__ == "__main__":
     print(f"[serve] avvio server su {HOST}:{PORT}")

@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/assets/mascot_shield.png">
+<title>Rizzo PII · locale</title>
+<link rel="stylesheet" href="/static/app.css?v=__VERSION__">
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="logo"><img src="/assets/mascot_shield.png" alt="rizzo-pii"
+         onerror="this.parentNode.textContent='🦔'"></div>
+    <div>
+      <h1>Rizzo PII <span class="ver">v__VERSION__</span></h1>
+      <div class="tag" data-i18n="tagline">modello locale su CPU · GDPR compliant</div>
+    </div>
+    <span class="badge"><span class="dot"></span> <span data-i18n="badge">100% in locale</span></span>
+    <div class="topright">
+      <select id="lang" class="lang" title="Lingua / Language" aria-label="Lingua / Language">
+        <option value="it">🇮🇹 Italiano</option>
+        <option value="en">🇬🇧 English</option>
+      </select>
+      <button class="gear" id="tagsBtn" title="Tag da anonimizzare" aria-label="PII tags" onclick="openTags()">🏷️</button>
+      <button class="gear" id="gearBtn" title="Configurazione server" aria-label="Server config" onclick="openConfig()">⚙️</button>
+      <span class="info" id="infoBtn" tabindex="0" role="button" aria-label="Avviso / info">⚠️<span class="tip" data-i18n="notice"></span></span>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <div class="tab on" id="tab1" onclick="showTab(1)">
+      <span class="num">1</span> <span data-i18n="tab1">Anonimizza</span> <span class="arrow">→</span>
+    </div>
+    <div class="tab" id="tab2" onclick="showTab(2)">
+      <span class="num">2</span> <span data-i18n="tab2">Ripristina la risposta</span>
+    </div>
+  </div>
+
+  <!-- ============ PANE 1: ANONIMIZZA ============ -->
+  <div class="pane on" id="pane1">
+    <div class="workspace">
+      <!-- input -->
+      <div class="card">
+        <div class="hd"><h2 data-i18n="in_title">① Il tuo documento</h2>
+          <div class="right">
+            <span class="hint" id="inHint" data-i18n="in_hint">incolla testo o trascina un PDF / .md</span>
+            <div class="seg-tabs" id="srcTabs" style="display:none">
+              <button class="on" id="sPdf" onclick="setSrcView('pdf')" data-i18n="v_pdf">Anteprima PDF</button>
+              <button id="sText" onclick="setSrcView('text')" data-i18n="v_raw">Testo</button>
+            </div>
+          </div></div>
+        <div class="bd">
+          <div class="view pdfview" id="pdfSrcView" style="display:none"></div>
+          <textarea id="src" data-i18n-ph="src_ph" placeholder="Incolla qui il testo dell'atto, del contratto o della sentenza…&#10;&#10;Oppure trascina un PDF nell'area qui sotto."></textarea>
+          <label class="drop" id="drop">
+            <span class="ic">📄</span>
+            <span id="dropTxt">Trascina un <b>PDF</b> o un <b>.md</b> qui, oppure <b>scegli un file</b></span>
+            <input type="file" id="pdf" accept=".pdf,.md,.markdown,.txt,application/pdf,text/markdown,text/plain" hidden>
+          </label>
+          <div class="mapsw" id="mapSw">
+            <button class="tsw" id="mapToggle" role="switch" aria-checked="true"
+                    aria-labelledby="mapTtl" onclick="toggleMapping()"><span class="knob"></span></button>
+            <div>
+              <div class="ttl" id="mapTtl"><span data-i18n="map_ttl">Dizionario reversibile</span>
+                <span class="st" id="mapState">ATTIVO</span></div>
+              <div class="sub" id="mapSub">Ogni PII riceve un ID: potrai ripristinare i valori veri dalla risposta dell'LLM.</div>
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn lg" id="go">🛡️ <span data-i18n="go">Anonimizza</span></button>
+            <button class="ghost" id="clear" data-i18n="clear">Pulisci</button>
+            <span class="hint"><span class="kbd">Ctrl</span>+<span class="kbd">Enter</span></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- output -->
+      <div class="card out">
+        <div class="hd">
+          <h2 data-i18n="out_title">② Risultato</h2>
+          <div class="right">
+            <div class="seg-tabs">
+              <button class="on" id="vPrev" onclick="setView('prev')" data-i18n="v_prev">Anteprima</button>
+              <button id="vText" onclick="setView('text')" data-i18n="v_text">Testo da copiare</button>
+              <button id="vPdf" onclick="setView('pdf')" data-i18n="v_opdf">PDF censurato</button>
+            </div>
+          </div>
+        </div>
+        <div class="bd">
+          <div class="view" id="viewPrev">
+            <div class="empty" id="emptyPrev">
+              <img src="/assets/mascot_doc.png" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'big',textContent:'🕵️'}))">
+              <div data-i18n="empty_prev">L'anteprima con le PII evidenziate apparirà qui.</div>
+            </div>
+            <div class="preview" id="prev" style="display:none"></div>
+          </div>
+          <div class="view pdfview" id="pdfOutView" style="display:none"></div>
+          <textarea class="mono" id="anon" style="display:none" readonly
+                    data-i18n-ph="anon_ph" placeholder="Il testo anonimizzato apparirà qui."></textarea>
+          <div class="row">
+            <button class="btn" id="copy">📋 <span data-i18n="copy">Copia per ChatGPT</span></button>
+            <button class="ghost" id="dlpdf">📄 <span data-i18n="dlpdf">Scarica PDF anonimizzato</span></button>
+            <button class="ghost" id="dl">⬇️ <span data-i18n="dl">Scarica dizionario</span></button>
+            <span class="hint" id="ulock"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- dizionario: staccato, a tutta larghezza sotto le due colonne, scrollabile -->
+    <div class="card dict" id="dictCard" style="display:none">
+      <div class="hd">
+        <h2 data-i18n="dict_title">Dizionario reversibile</h2>
+        <div class="right hint" id="dictHint" data-i18n="dict_hint">resta solo qui, in locale</div>
+      </div>
+      <div class="bd">
+        <div class="meta" id="meta"></div>
+        <div class="legend" id="legend"></div>
+        <div class="callout" id="dictNone" style="display:none;margin:0 16px 14px">
+          <span class="ic">🔒</span><div data-i18n="dict_off">Nessun dizionario: l'anonimizzazione di questo testo è <b>definitiva</b>.</div>
+        </div>
+        <div class="tablewrap" id="tablewrap">
+          <table><thead><tr><th data-i18n="th_id">ID</th><th data-i18n="th_val">Valore originale</th><th data-i18n="th_type">Tipo</th></tr></thead>
+          <tbody id="maprows"></tbody></table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ PANE 2: RIPRISTINA ============ -->
+  <div class="pane" id="pane2">
+    <div class="callout" id="rOff" style="display:none">
+      <span class="ic">🔒</span>
+      <div data-i18n="r_off">Lo switch <b>Dizionario reversibile</b> è su DISATTIVO: le nuove
+      anonimizzazioni non producono chiavi. Qui puoi comunque ripristinare con un dizionario
+      <b>.json salvato in precedenza</b>.</div>
+    </div>
+    <div class="callout">
+      <span class="ic">💡</span>
+      <div data-i18n="callout">Incolla qui la <b>risposta dell'LLM</b> (che contiene i placeholder come
+      <span class="kbd">[FULLNAME_1]</span>): l'app rimette i valori veri usando il dizionario
+      di questa sessione. Se hai chiuso e riaperto l'app, <b>carica il dizionario .json</b> che
+      avevi salvato.</div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <div class="hd"><h2 data-i18n="r_title1">Risposta con i placeholder</h2>
+          <div class="right">
+            <label class="chip" style="cursor:pointer"><span data-i18n="loaddict">📁 Carica dizionario</span>
+              <input type="file" id="dictFile" accept="application/json" hidden></label>
+          </div></div>
+        <div class="bd">
+          <textarea id="rin" data-i18n-ph="rin_ph" placeholder="Incolla qui la risposta di ChatGPT…"></textarea>
+          <div class="row">
+            <button class="btn lg" id="rev">🔓 <span data-i18n="rev">Ripristina valori</span></button>
+            <button class="ghost" id="rclear" data-i18n="clear">Pulisci</button>
+            <span class="hint" id="dictInfo"></span>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="hd"><h2 data-i18n="r_title2">Testo ripristinato</h2></div>
+        <div class="bd">
+          <div class="view"><div class="preview" id="rout">
+            <div class="empty"><img src="/assets/mascot_doc.png" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'big',textContent:'🔓'}))">
+            <div data-i18n="empty_rout">Il testo con i valori reali apparirà qui.</div></div>
+          </div></div>
+          <div class="row"><button class="btn" id="rcopy">📋 <span data-i18n="rcopy">Copia testo ripristinato</span></button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="credits">Realizzato da <b>Simone Rizzo</b> · sponsorizzato da <b>Rizzo AI Academy</b> · <span class="u">www.rizzoaiacademy.com</span></div>
+</div>
+
+<div id="toast"></div>
+
+<!-- config modal -->
+<div class="cfg-overlay" id="cfgOverlay">
+  <div class="cfg-card">
+    <h3>⚙️ <span data-i18n="cfg_title">Configurazione server</span></h3>
+    <div class="cfg-row">
+      <label data-i18n="cfg_host">Indirizzo</label>
+      <input id="cfgHost" type="text" value="127.0.0.1" spellcheck="false">
+    </div>
+    <div class="cfg-row">
+      <label data-i18n="cfg_port">Porta</label>
+      <input id="cfgPort" type="number" min="1024" max="65535" value="5005">
+    </div>
+    <div class="cfg-status" id="cfgStatus"></div>
+    <div class="cfg-btns">
+      <button class="btn" id="cfgSave" onclick="saveConfig()">💾 <span data-i18n="cfg_save">Salva</span></button>
+      <button class="ghost" id="cfgCheck" onclick="checkPort()"><span data-i18n="cfg_check">Verifica porta</span></button>
+      <button class="ghost" onclick="closeConfig()" data-i18n="cfg_cancel">Annulla</button>
+    </div>
+    <div class="cfg-note" data-i18n="cfg_restart_note">Le modifiche avranno effetto al prossimo avvio.</div>
+  </div>
+</div>
+
+<!-- tags modal: legenda + selezione dei tag da anonimizzare -->
+<div class="cfg-overlay" id="tagsOverlay">
+  <div class="cfg-card wide">
+    <h3>🏷️ <span data-i18n="tg_title">Tag da anonimizzare</span></h3>
+    <div class="tg-sub" data-i18n="tg_sub">Deseleziona i tipi che vuoi <b>lasciare in chiaro</b>: verranno comunque rilevati, ma non sostituiti da un placeholder.</div>
+    <div class="tg-bar">
+      <button class="mini" onclick="setAllTags(true)" data-i18n="tg_all">Seleziona tutti</button>
+      <button class="mini" onclick="setAllTags(false)" data-i18n="tg_none">Nessuno</button>
+      <span class="count" id="tgCount"></span>
+    </div>
+    <div class="tg-list" id="tgList"></div>
+    <div class="cfg-status" id="tgStatus"></div>
+    <div class="cfg-btns" style="margin-top:14px">
+      <button class="btn" onclick="saveTags()">💾 <span data-i18n="cfg_save">Salva</span></button>
+      <button class="ghost" onclick="closeTags()" data-i18n="cfg_cancel">Annulla</button>
+    </div>
+    <div class="cfg-note" id="tgNote"></div>
+  </div>
+</div>
+
+<script src="/static/app.js?v=__VERSION__"></script>
+</body>
+</html>
