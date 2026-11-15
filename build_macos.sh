@@ -83,17 +83,17 @@ if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
   # Entitlements solo sugli eseguibili (sulle librerie non contano).
   ENT="$ROOT/tauri/src-tauri/entitlements.plist"
   echo ">> firmo i binari del backend (qualche minuto)"
-  MACHO_LIST="build/macho_da_firmare.txt"
-  : > "$MACHO_LIST"
-  while IFS= read -r -d '' f; do
-    case "$(file -b "$f")" in *Mach-O*) printf '%s\0' "$f" >> "$MACHO_LIST" ;; esac
-  done < <(find tauri/src-tauri/backend -type f -print0)
-  echo ">> $(tr -cd '\0' < "$MACHO_LIST" | wc -c | tr -d ' ') binari"
-  xargs -0 -n 20 -P 8 codesign --force --timestamp --options runtime \
-    --entitlements "$ENT" --sign "$APPLE_SIGNING_IDENTITY" < "$MACHO_LIST"
-  rm -f "$MACHO_LIST"
+  # scioglie i link simbolici (Tauri li copierebbe come file, con firme non piu'
+  # valide: "_internal/Python ... invalid Info.plist") e firma ogni Mach-O.
+  # Dettagli in testa allo script.
+  bash scripts/firma_backend_macos.sh tauri/src-tauri/backend "$APPLE_SIGNING_IDENTITY" "$ENT"
+  [ ! -L tauri/src-tauri/backend/pii-backend/_internal/Python ] \
+    || { echo "ERRORE: _internal/Python e' ancora un link simbolico"; exit 1; }
   codesign --verify --strict tauri/src-tauri/backend/pii-backend/pii-backend
   codesign --verify --strict tauri/src-tauri/backend/pii-backend/_internal/ocr/rizzo-ocr
+  if [ -e tauri/src-tauri/backend/pii-backend/_internal/Python ]; then
+    codesign --verify --strict tauri/src-tauri/backend/pii-backend/_internal/Python
+  fi
 else
   echo ">> ATTENZIONE: nessuna 'Developer ID Application' nel portachiavi -> firma ad-hoc"
 fi
@@ -129,6 +129,24 @@ if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
   for d in src-tauri/target/release/bundle/dmg/*.dmg; do
     [ -f "$d" ] && codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$d"
   done
+fi
+
+# controllo sull'app FINITA: Tauri copia il backend nelle risorse e una firma
+# valida prima della copia puo' non esserlo dopo (e' cosi' che _internal/Python
+# si era rotto). Meglio fermarsi qui che scoprirlo all'avvio o dalla notarizzazione.
+if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+  APP="src-tauri/target/release/bundle/macos/Rizzo PII.app"
+  echo ">> controllo le firme dentro $APP"
+  bad=0
+  while IFS= read -r -d '' f; do
+    case "$(file -b "$f")" in
+      *Mach-O*) codesign --verify --strict "$f" 2>/dev/null \
+                  || { echo "FIRMA NON VALIDA: $f"; bad=1; } ;;
+    esac
+  done < <(find "$APP/Contents/Resources" -type f -print0)
+  codesign --verify --deep --strict "$APP" || bad=1
+  [ "$bad" -eq 0 ] || { echo "ERRORE: firme non valide nell'app finita"; exit 1; }
+  echo ">> firme dell'app valide"
 fi
 
 echo

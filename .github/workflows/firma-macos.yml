@@ -1,0 +1,103 @@
+name: firma-macos
+
+# Prova la firma del backend come la fa build_macos.sh, senza torch ne' modello:
+# un eseguibile PyInstaller piccolo, costruito con un Python "framework"
+# (Homebrew, come sul Mac di sviluppo), firmato ad-hoc con
+# scripts/firma_backend_macos.sh, poi copiato seguendo i link come fa Tauri
+# dentro un .app finto. Tutte le firme devono restare valide dopo la copia e
+# l'eseguibile copiato deve partire (e' li' che si rompeva _internal/Python).
+on:
+  push:
+    paths:
+      - "scripts/firma_backend_macos.sh"
+      - "build_macos.sh"
+      - "tauri/src-tauri/entitlements.plist"
+      - ".github/workflows/firma-macos.yml"
+  pull_request:
+    paths:
+      - "scripts/firma_backend_macos.sh"
+      - "build_macos.sh"
+      - "tauri/src-tauri/entitlements.plist"
+      - ".github/workflows/firma-macos.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firma-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  firma:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      ENT: tauri/src-tauri/entitlements.plist
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python framework (Homebrew) + PyInstaller
+        run: |
+          brew list python@3.13 >/dev/null 2>&1 || brew install python@3.13
+          PY="$(brew --prefix python@3.13)/bin/python3.13"
+          "$PY" -c "import sys, sysconfig; print(sys.version, sysconfig.get_config_var('PYTHONFRAMEWORK'))"
+          "$PY" -m venv "$RUNNER_TEMP/v"
+          "$RUNNER_TEMP/v/bin/pip" install "pyinstaller==6.22.3"
+
+      - name: backend di prova con PyInstaller
+        run: |
+          cd "$RUNNER_TEMP"
+          printf '%s\n' 'import json, ssl, sqlite3, hashlib' \
+            'print("BACKEND OK", json.dumps({"ssl": ssl.OPENSSL_VERSION[:7]}), sqlite3.sqlite_version)' > hello.py
+          v/bin/pyinstaller --onedir --noconfirm --name pii-backend \
+            --distpath backend --workpath work hello.py
+          echo "--- link simbolici prodotti da PyInstaller ---"
+          find backend -type l -exec ls -l {} \;
+          cp -R backend backend_vecchio
+
+      - name: "come prima della correzione (solo per confronto, non blocca)"
+        run: |
+          cd "$RUNNER_TEMP"
+          find backend_vecchio -type f -print0 | while IFS= read -r -d '' f; do
+            case "$(file -b "$f")" in *Mach-O*)
+              codesign --force --timestamp=none --options runtime \
+                --entitlements "$GITHUB_WORKSPACE/$ENT" --sign - "$f" ;;
+            esac
+          done
+          cp -RL backend_vecchio copia_vecchia
+          codesign --verify --strict --verbose=4 copia_vecchia/pii-backend/_internal/Python \
+            || echo "(atteso: firma rotta dopo la copia)"
+
+      - name: firma con lo script di build_macos.sh
+        run: bash scripts/firma_backend_macos.sh "$RUNNER_TEMP/backend" - "$ENT"
+
+      - name: .app finto, copia come Tauri, verifica e avvio
+        run: |
+          cd "$RUNNER_TEMP"
+          APP="Prova.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          printf 'print("app")\n' > main.swift
+          swiftc -O -o "$APP/Contents/MacOS/Prova" main.swift
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>Prova</string>
+            <key>CFBundleIdentifier</key><string>it.prova.firma</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+          </dict></plist>
+          PLIST
+          cp -RL backend "$APP/Contents/Resources/backend"
+          codesign --force --timestamp=none --options runtime \
+            --entitlements "$GITHUB_WORKSPACE/$ENT" --sign - "$APP"
+          bad=0
+          while IFS= read -r -d '' f; do
+            case "$(file -b "$f")" in
+              *Mach-O*) codesign --verify --strict "$f" 2>/dev/null \
+                          || { echo "FIRMA NON VALIDA: $f"; codesign --verify --strict --verbose=4 "$f" || true; bad=1; } ;;
+            esac
+          done < <(find "$APP/Contents/Resources" -type f -print0)
+          codesign --verify --deep --strict --verbose=2 "$APP" || bad=1
+          test "$bad" -eq 0
+          "$APP/Contents/Resources/backend/pii-backend/pii-backend" | tee out.txt
+          grep -q "BACKEND OK" out.txt

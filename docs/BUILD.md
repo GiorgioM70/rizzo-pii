@@ -171,7 +171,11 @@ Note specifiche di macOS:
 - **Firma**: se nel portachiavi c'è una "Developer ID Application" lo script firma con hardened
   runtime e timestamp **ogni binario del backend** (librerie di torch, estensioni Python, OCR):
   Tauri firma l'eseguibile principale ma non i file dentro Resources, e la notarizzazione li
-  rifiuterebbe. Poi firma anche il `.dmg`. Notarizzazione: `xcrun notarytool submit <dmg>
+  rifiuterebbe. Lo fa `scripts/firma_backend_macos.sh`, che prima trasforma i **link simbolici** di
+  PyInstaller in copie vere: Tauri copia le risorse seguendo i link e `_internal/Python` (link alla
+  libreria dentro `Python.framework`) diventava una copia con la firma rotta ("invalid Info.plist")
+  e il backend non partiva. A fine build lo script ricontrolla le firme dentro l'app finita; il
+  workflow `firma-macos` prova tutto con un backend piccolo. Poi firma anche il `.dmg`. Notarizzazione: `xcrun notarytool submit <dmg>
   --keychain-profile <profilo> --wait` e poi `xcrun stapler staple <dmg>`. Senza Developer ID la
   build resta ad-hoc: in locale si apre, su un altro Mac serve "tasto destro → Apri", oppure
   `xattr -dr com.apple.quarantine "Rizzo PII.app"`.
