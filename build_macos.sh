@@ -131,22 +131,18 @@ if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
   done
 fi
 
-# controllo sull'app FINITA: Tauri copia il backend nelle risorse e una firma
-# valida prima della copia puo' non esserlo dopo (e' cosi' che _internal/Python
-# si era rotto). Meglio fermarsi qui che scoprirlo all'avvio o dalla notarizzazione.
+# controllo sull'app FINITA (anche quella dentro il dmg: con il solo bundle dmg
+# Tauri cancella il .app a fine giro). Dettagli in scripts/verifica_app_macos.sh.
 if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
-  APP="src-tauri/target/release/bundle/macos/Rizzo PII.app"
-  echo ">> controllo le firme dentro $APP"
-  bad=0
-  while IFS= read -r -d '' f; do
-    case "$(file -b "$f")" in
-      *Mach-O*) codesign --verify --strict "$f" 2>/dev/null \
-                  || { echo "FIRMA NON VALIDA: $f"; bad=1; } ;;
-    esac
-  done < <(find "$APP/Contents/Resources" -type f -print0)
-  codesign --verify --deep --strict "$APP" || bad=1
-  [ "$bad" -eq 0 ] || { echo "ERRORE: firme non valide nell'app finita"; exit 1; }
-  echo ">> firme dell'app valide"
+  DA_CONTROLLARE=()
+  [ -d "src-tauri/target/release/bundle/macos/Rizzo PII.app" ] \
+    && DA_CONTROLLARE+=("src-tauri/target/release/bundle/macos/Rizzo PII.app")
+  for d in src-tauri/target/release/bundle/dmg/*.dmg; do
+    [ -f "$d" ] && DA_CONTROLLARE+=("$d")
+  done
+  # (bash 3.2 di macOS: un array vuoto con set -u da' "unbound variable")
+  [ "${#DA_CONTROLLARE[@]}" -gt 0 ] || { echo "ERRORE: ne' .app ne' .dmg da controllare"; exit 1; }
+  bash ../scripts/verifica_app_macos.sh "${DA_CONTROLLARE[@]}"
 fi
 
 echo

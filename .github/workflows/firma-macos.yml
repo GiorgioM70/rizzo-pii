@@ -10,12 +10,14 @@ on:
   push:
     paths:
       - "scripts/firma_backend_macos.sh"
+      - "scripts/verifica_app_macos.sh"
       - "build_macos.sh"
       - "tauri/src-tauri/entitlements.plist"
       - ".github/workflows/firma-macos.yml"
   pull_request:
     paths:
       - "scripts/firma_backend_macos.sh"
+      - "scripts/verifica_app_macos.sh"
       - "build_macos.sh"
       - "tauri/src-tauri/entitlements.plist"
       - ".github/workflows/firma-macos.yml"
@@ -101,3 +103,13 @@ jobs:
           test "$bad" -eq 0
           "$APP/Contents/Resources/backend/pii-backend/pii-backend" | tee out.txt
           grep -q "BACKEND OK" out.txt
+
+      - name: controllo finale di build_macos.sh, su .app e su .dmg
+        run: |
+          cd "$RUNNER_TEMP"
+          bash "$GITHUB_WORKSPACE/scripts/verifica_app_macos.sh" Prova.app
+          mkdir dmgsrc && cp -R Prova.app dmgsrc/
+          hdiutil create -volname Prova -srcfolder dmgsrc -ov -format UDZO Prova.dmg
+          codesign --force --timestamp=none --sign - Prova.dmg
+          rm -rf Prova.app dmgsrc        # come Tauri: resta solo il dmg
+          bash "$GITHUB_WORKSPACE/scripts/verifica_app_macos.sh" Prova.dmg
