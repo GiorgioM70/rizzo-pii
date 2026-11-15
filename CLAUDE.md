@@ -141,7 +141,10 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   dell'atto, ogni carattere largo quanto il corpo) `apply_redactions()` toglierebbe anche le lettere
   accanto alla casella ("numero" → "nume"), sull'immagine sbianca solo i pixel dentro,
   (1) redazione normale del layer, (2) redazione sui **riquadri delle
-  parole** dell'OCR con margine (`OCR_PAD`), `apply_redactions()` sbianca i pixel dell'immagine sotto,
+  parole** dell'OCR con margine (`OCR_PAD`), ma i bordi verso le parole vicine si **allineano all'inchiostro** del dato
+  (`_Ink.snap`, render in grigi a 300 dpi): i riquadri di Vision sono larghi e la casella copriva
+  l'ultima lettera prima ("Signor" -> "Signo"); anche il bordo da 1 pt che `apply_redactions()`
+  disegna attorno alla casella e' compensato (`REDACT_STROKE_HALF`), `apply_redactions()` sbianca i pixel dell'immagine sotto,
   (3) **rilettura con l'OCR** del PDF in uscita: valore ancora leggibile → `residual`; pagina non
   riletta → `ocr_unverified` (avviso nell'UI).
   Risposte: `pages_ocr` (pagine lette), `pages_no_text` (pagine senza testo leggibile **non** lette:

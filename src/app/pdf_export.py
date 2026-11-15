@@ -90,7 +90,10 @@ def _fit_fontsize(text, rect, max_fs=10.0, min_fs=4.0):
         return 0
     if w10 <= 0:
         return 0
-    fs = min(max_fs, rect.height * 0.82, 10.0 * max(rect.width - 2.0, 0.0) / w10)
+    # la casella colorata col segnaposto sta dentro `rect` di REDACT_STROKE_HALF
+    h = 2 * REDACT_STROKE_HALF
+    fs = min(max_fs, max(rect.height - h, 0.0) * 0.82,
+             10.0 * max(rect.width - h - 2.0, 0.0) / w10)
     return round(fs, 1) if fs >= min_fs else 0
 
 
@@ -395,6 +398,80 @@ def _pad(rect, k=OCR_PAD):
     return fitz.Rect(rect.x0 - dx, rect.y0 - dy, rect.x1 + dx, rect.y1 + dy)
 
 
+# Bordi delle caselle sulle pagine OCR allineati all'INCHIOSTRO vero: i riquadri
+# di Vision sono larghi e il margine OCR_PAD li allarga ancora, quindi la casella
+# finiva sopra l'ultima lettera della parola prima ("Signor" -> "Signo").
+# La pagina si renderizza in grigi una volta; per ogni casella si cercano le
+# colonne con inchiostro sulla riga: il dato sono i tratti col centro dentro il
+# riquadro di Vision, e la casella parte dal primo tratto del dato e finisce
+# sull'ultimo: tra la parola prima e la casella resta bianco tutto lo
+# spazio-lettera, e lo stesso verso la parola dopo. Verso il bianco libero
+# (inizio o fine riga) il margine resta OCR_PAD.
+INK_DPI = 300
+INK_LEVEL = 140          # grigio (0-255) sotto cui un pixel e' inchiostro
+INK_SAME_WORD = 0.12     # spazio < 12% dell'altezza della riga: stessa parola
+
+
+class _Ink:
+    """Pagina come si vede (rotazione compresa), in grigi, per misurare dove
+    sta l'inchiostro attorno a un riquadro dell'OCR."""
+
+    def __init__(self, page):
+        self.pix = page.get_pixmap(dpi=INK_DPI, colorspace=fitz.csGRAY, annots=False)
+        self.k = INK_DPI / 72.0
+        self.to_vis = page.rotation_matrix
+        self.from_vis = page.derotation_matrix
+
+    def _ink_cols(self, x0, x1, y0, y1):
+        W, H, s = self.pix.width, self.pix.height, self.pix.samples
+        x0, x1 = max(0, x0), min(W, x1)
+        y0, y1 = max(0, y0), min(H, y1)
+        cols = []
+        for x in range(x0, x1):
+            cols.append(any(s[y * W + x] < INK_LEVEL for y in range(y0, y1)))
+        return x0, cols
+
+    def snap(self, rect, k=OCR_PAD):
+        """Riquadro dell'OCR (coordinate non ruotate) -> casella con margine,
+        allineata all'inchiostro del dato e staccata dalle parole vicine."""
+        vis = fitz.Rect(rect) * self.to_vis
+        h = max(vis.height, 1.0)
+        dx, dy = max(1.0, h * k * 0.6), max(1.0, h * k)
+        padded = fitz.Rect(vis.x0 - dx, vis.y0 - dy, vis.x1 + dx, vis.y1 + dy)
+        q = self.k
+        bx0, bx1 = vis.x0 * q, vis.x1 * q
+        start, cols = self._ink_cols(int((vis.x0 - 3 * h) * q), int((vis.x1 + 3 * h) * q) + 1,
+                                     int(vis.y0 * q), int(vis.y1 * q) + 1)
+        runs, i = [], 0
+        while i < len(cols):                       # tratti di inchiostro contigui
+            if cols[i]:
+                j = i
+                while j + 1 < len(cols) and cols[j + 1]:
+                    j += 1
+                runs.append([start + i, start + j + 1])
+                i = j + 1
+            else:
+                i += 1
+        val = [n for n, (a, b) in enumerate(runs) if bx0 <= (a + b) / 2 <= bx1]
+        if not val:
+            return _pad(rect, k)
+        lo, hi = val[0], val[-1]
+        same = INK_SAME_WORD * h * q
+        while lo > 0 and runs[lo][0] - runs[lo - 1][1] < same:          # lettera tagliata
+            lo -= 1
+        while hi + 1 < len(runs) and runs[hi + 1][0] - runs[hi][1] < same:
+            hi += 1
+        vx0, vx1 = runs[lo][0] / q, runs[hi][1] / q
+        # verso una parola vicina la casella si ferma sul bordo dell'inchiostro
+        # del dato: tutto lo spazio-lettera resta bianco. Verso il bianco
+        # libero (inizio o fine riga) resta il margine OCR_PAD.
+        left = vx0 if lo > 0 else vx0 - dx
+        right = vx1 if hi + 1 < len(runs) else vx1 + dx
+        box = fitz.Rect(left, padded.y0, right, padded.y1) * self.from_vis
+        box.normalize()
+        return box
+
+
 # Pagina scansionata col testo dello scanner: se questa quota dei caratteri e'
 # INVISIBILE (render mode 3) il layer e' quello dello scanner e si toglie tutto.
 INVISIBLE_LAYER_MIN = 0.5
@@ -543,7 +620,7 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
     ocr_pages = {i: p for i, p in (ocr_pages or {}).items()
                  if 0 <= i < doc.page_count}
 
-    def _redact_text(page, text, boxes, taken, pad):
+    def _redact_text(page, text, boxes, taken, pad, ink=None):
         n = 0
         if not text.strip():
             return 0
@@ -551,7 +628,7 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
             for m in pat.finditer(text):
                 rects = _match_rects(boxes, m)
                 if pad:
-                    rects = [_pad(r) for r in rects]
+                    rects = [ink.snap(r) if ink else _pad(r) for r in rects]
                 placed_any, labeled = False, False
                 for r in rects:
                     if _covered(r, taken):
@@ -590,7 +667,11 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
         # 2) testo letto dall'OCR: copre quello che si VEDE nell'immagine
         if pno in ocr_pages:
             o_text, o_boxes = _ocr_char_index(ocr_pages[pno])
-            total += _redact_text(page, o_text, o_boxes, taken, pad=True)
+            try:
+                ink = _Ink(page)
+            except Exception:
+                ink = None
+            total += _redact_text(page, o_text, o_boxes, taken, pad=True, ink=ink)
         if taken:
             page.apply_redactions()   # rimozione VERA dal content stream
         # dopo le redazioni: annotazioni e campi modulo non sono content stream
@@ -626,15 +707,37 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
     }
 
 
+# apply_redactions() colora la casella con riempimento E bordo dello stesso
+# colore, spesso 1 pt: la casella visibile e' mezzo punto piu' larga del
+# rettangolo da redigere su ogni lato. Accanto a una parola quel mezzo punto
+# copriva meta' dell'ultima lettera ("Signor" -> "Signo").
+REDACT_STROKE_HALF = 0.5
+
+
 def _add_redact_annot(page, rect, text, fontsize, fill, text_color):
     """add_redact_annot con cross_out disattivato dove il binding lo supporta
-    (le X diagonali sporcano il placeholder); fallback per le versioni vecchie."""
+    (le X diagonali sporcano il placeholder); fallback per le versioni vecchie.
+
+    La casella colorata deve coincidere col rettangolo: una redazione senza
+    colore su tutto `rect` toglie testo e pixel, una seconda col colore e il
+    segnaposto sta dentro di mezzo punto, cosi' col bordo arriva proprio al
+    bordo di `rect` e non oltre."""
+    rect = fitz.Rect(rect)
+    h = REDACT_STROKE_HALF
+    inner = fitz.Rect(rect.x0 + h, rect.y0 + h, rect.x1 - h, rect.y1 - h)
     kw = dict(text=text, fontname="helv", fontsize=fontsize,
               align=fitz.TEXT_ALIGN_CENTER, fill=fill, text_color=text_color)
-    try:
-        return page.add_redact_annot(rect, cross_out=False, **kw)
-    except TypeError:
-        return page.add_redact_annot(rect, **kw)
+
+    def add(r, **k):
+        try:
+            return page.add_redact_annot(r, cross_out=False, **k)
+        except TypeError:
+            return page.add_redact_annot(r, **k)
+
+    if not fill or inner.width < 1 or inner.height < 1:
+        return add(rect, **kw)
+    add(rect)                       # solo togliere, nessun colore
+    return add(inner, **kw)
 
 
 def text_to_pdf(text, margin=56.0, fontsize=10.5, leading=15.5):

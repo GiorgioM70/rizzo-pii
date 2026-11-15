@@ -317,10 +317,13 @@ def rect_non_ruotato(pdf_bytes, rect_visto):
 
 
 class OcrFinto:
-    """Legge una parola se il suo riquadro contiene ancora pixel neri."""
+    """Legge una parola se il suo riquadro contiene ancora pixel neri.
+    `allarga` (frazione della larghezza della pagina, per lato) restituisce
+    riquadri piu' larghi della parola, come fa Vision."""
 
-    def __init__(self, truth, spostamento=0.0):
+    def __init__(self, truth, spostamento=0.0, allarga=0.0):
         self.truth, self.dx, self.calls = truth, spostamento, 0
+        self.allarga = allarga
 
     def __call__(self, png):
         self.calls += 1
@@ -340,7 +343,8 @@ class OcrFinto:
 
         lines = []
         for riga in self.truth:
-            words = [{"text": t, "box": [b[0] + self.dx, b[1], b[2], b[3]]}
+            a = self.allarga
+            words = [{"text": t, "box": [b[0] + self.dx - a, b[1], b[2] + 2 * a, b[3]]}
                      for t, b in riga if nero(b)]
             if words:
                 lines.append({"text": " ".join(w["text"] for w in words),
@@ -363,6 +367,38 @@ def _pixel_neri(pdf_bytes, rect):
             if max(s[i:i + 3]) < 80:
                 tot += 1
     return tot
+
+
+def _riga(pdf_bytes, rect, dpi=300):
+    """Colonne (in pt) della fascia centrale della riga di `rect`, con i pixel
+    RGB di ogni colonna. Pagina non ruotata."""
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as d:
+        pix = d[0].get_pixmap(dpi=dpi)
+    k, W, n, s = dpi / 72, pix.width, pix.n, pix.samples
+    y0, y1 = int((rect.y0 + rect.height * 0.3) * k), int((rect.y1 - rect.height * 0.3) * k)
+    x0, x1 = int((rect.x0 - 40) * k), int((rect.x1 + 40) * k)
+    for x in range(max(0, x0), min(W, x1)):
+        yield x / k, [tuple(s[(y * W + x) * n:(y * W + x) * n + 3]) for y in range(y0, y1)]
+
+
+def _inchiostro(pdf_bytes, rect):
+    """(fine dell'inchiostro prima di rect, (inizio, fine) dell'inchiostro dentro
+    rect, inizio dell'inchiostro dopo), in pt."""
+    nere = [x for x, px in _riga(pdf_bytes, rect) if any(max(p) < 100 for p in px)]
+    passo = 72 / 300
+    dentro = [x for x in nere if rect.x0 - 1 <= x <= rect.x1 + 1]
+    prima = max((x for x in nere if x < rect.x0 - 1), default=None)
+    dopo = min((x for x in nere if x > rect.x1 + 1), default=None)
+    return (None if prima is None else prima + passo,
+            (dentro[0], dentro[-1] + passo) if dentro else None, dopo)
+
+
+def _casella(pdf_bytes, rect):
+    """(inizio, fine) in pt della casella viola sulla riga di rect."""
+    fill = tuple(round(c * 255) for c in pdf_export.REDACT_FILL)
+    viola = [x for x, px in _riga(pdf_bytes, rect)
+             if any(max(abs(a - b) for a, b in zip(p, fill)) < 25 for p in px)]
+    return viola[0], viola[-1] + 72 / 300
 
 
 def ruota_verita(truth, page):
@@ -711,6 +747,40 @@ class TestoVisibileIllegibile(unittest.TestCase):
         self.assertIn("[IBAN_1]", txt)
         self.assertNotIn("\x01", txt)                 # il testo illeggibile e' uscito
         self.assertEqual([1], rep["flattened"])
+
+    def test_casella_staccata_di_uno_spazio(self):
+        """Riquadri dell'OCR larghi 3 pt in piu' per lato, come quelli di Vision:
+        tra l'ultima lettera prima del dato e la casella deve restare bianco
+        tutto lo spazio-lettera che c'era, e lo stesso tra la casella e la
+        parola dopo. La casella copre comunque tutto il dato."""
+        data = testo_largo()
+        src = _sorgente()
+        truth = _verita(src[0])
+        parole = {w[4]: fitz.Rect(w[:4]) for w in src[0].get_text("words")}
+        src.close()
+        with fitz.open(stream=data, filetype="pdf") as d:
+            res = ocr.analyze_doc(d, OcrFinto(truth, allarga=3 / 595))
+
+        def rileggi(out, idx):
+            with fitz.open(stream=out, filetype="pdf") as d:
+                return ocr.ocr_pages(d, idx, OcrFinto(truth))[0]
+        out, rep = pdf_export.redact_pdf(data, {"[IBAN_1]": IBAN, "[EMAIL_1]": EMAIL},
+                                         ocr_pages=res.pages, ocr_verify=rileggi)
+        self.assertEqual([], rep["residual"])
+        for valore in (IBAN, EMAIL):
+            w = parole[valore]
+            prima, dato, dopo = _inchiostro(data, w)
+            c0, c1 = _casella(out, w)
+            spazio_sx, spazio_dx = dato[0] - prima, dopo - dato[1]
+            self.assertGreater(spazio_sx, 2.0)          # c'e' davvero uno spazio
+            # bianco tra la lettera prima e la casella: tutto lo spazio (0,3 pt
+            # di tolleranza per i pixel) e la casella copre il dato
+            self.assertGreaterEqual(c0 - prima, spazio_sx - 0.3, valore)
+            self.assertGreaterEqual(dopo - c1, spazio_dx - 0.3, valore)
+            self.assertLessEqual(c0, dato[0] + 0.3, valore)
+            self.assertGreaterEqual(c1, dato[1] - 0.3, valore)
+            # e la lettera prima e' intera
+            self.assertEqual(_inchiostro(out, w)[0], prima)
 
     def test_senza_immagine_le_lettere_sparivano(self):
         """La causa, per memoria: redazione diretta sul testo Type 3."""

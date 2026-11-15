@@ -26,8 +26,8 @@ import pymupdf as fitz  # noqa: E402
 
 import ocr  # noqa: E402
 import pdf_export  # noqa: E402
-from test_ocr import (EMAIL, IBAN, SPOSTATO, _pixel_neri, rect_non_ruotato,  # noqa: E402
-                      scansione, scansione_ruotata, testo_largo)
+from test_ocr import (EMAIL, IBAN, SPOSTATO, _casella, _inchiostro, _pixel_neri,  # noqa: E402
+                      _sorgente, rect_non_ruotato, scansione, scansione_ruotata, testo_largo)
 from test_ora import APP, client  # noqa: E402
 
 ENGINE = ocr.default_engine()
@@ -121,6 +121,21 @@ class VisionVero(unittest.TestCase):
         for parola in ("conto", "IBAN", "intestato", "scrivere", "a", "entro"):
             self.assertRegex(letto, re.compile(r"(?<!\w)%s(?!\w)" % re.escape(parola),
                                                re.IGNORECASE))
+        # con i riquadri veri di Vision: tra l'ultima lettera prima del dato e
+        # la casella resta bianco tutto lo spazio-lettera, e lo stesso dopo
+        src = _sorgente()
+        parole = {w[4]: fitz.Rect(w[:4]) for w in src[0].get_text("words")}
+        src.close()
+        for valore in (IBAN, EMAIL):
+            w = parole[valore]
+            prima, dato, dopo = _inchiostro(data, w)
+            c0, c1 = _casella(out, w)
+            print("%s: spazio prima %.2f pt -> bianco %.2f pt; dopo %.2f -> %.2f"
+                  % (valore[:8], dato[0] - prima, c0 - prima, dopo - dato[1], dopo - c1))
+            self.assertGreaterEqual(c0 - prima, dato[0] - prima - 0.3, valore)
+            self.assertGreaterEqual(dopo - c1, dopo - dato[1] - 0.3, valore)
+            self.assertLessEqual(c0, dato[0] + 0.3, valore)
+            self.assertGreaterEqual(c1, dato[1] - 0.3, valore)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
