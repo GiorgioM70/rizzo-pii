@@ -9,16 +9,18 @@
 #
 # PERCHE' I LINK VANNO SCIOLTI: con un Python "framework" (python.org, Homebrew)
 # PyInstaller mette la libreria in _internal/Python.framework/Versions/X/Python
-# e crea _internal/Python come LINK SIMBOLICO. Firmata dentro il framework, la
-# firma resta legata all'Info.plist del framework. Tauri, copiando le risorse,
-# segue i link: _internal/Python diventa una copia del file FUORI dal framework,
-# con una firma che non torna ("invalid Info.plist (plist or signature have been
-# modified)"), e il backend non parte: "[PYI] Failed to load Python shared
-# library ... code signature invalid". Lo stesso vale per i link interni al
-# framework (Python.framework/Python, Versions/Current): Tauri li trasforma in
-# copie. Qui tutti i link a un Mach-O e i link a cartelle del framework
-# diventano copie vere PRIMA di firmare, cosi' ogni file viene firmato dov'e'
-# e la firma resta valida dopo la copia di Tauri.
+# e crea _internal/Python come LINK SIMBOLICO. Tauri, copiando le risorse, segue
+# i link: _internal/Python diventa una copia FUORI dal framework con una firma
+# legata all'Info.plist del framework, quindi non valida ("invalid Info.plist"),
+# e il backend non parte ("[PYI] Failed to load Python shared library ... code
+# signature invalid"). Anche il framework stesso, con i suoi link interni
+# (Versions/Current, Python), dopo la copia diventa un pacchetto ambiguo che
+# codesign rifiuta ("bundle format is ambiguous").
+# Soluzione: _internal/Python diventa un file vero (e' quello che il
+# bootloader carica) e Python.framework si toglie, ma solo se nessun binario lo
+# richiama per percorso (controllo con otool -L). Gli altri link a binari
+# diventano copie. Poi ogni Mach-O si firma dov'e', e la firma resta valida
+# dopo la copia di Tauri.
 # ============================================================================
 set -euo pipefail
 
@@ -29,19 +31,45 @@ ENT="$3"
 [ -d "$DIR" ] || { echo "ERRORE: cartella backend mancante: $DIR"; exit 1; }
 [ -f "$ENT" ] || { echo "ERRORE: entitlements mancanti: $ENT"; exit 1; }
 
-# 1) link -> copie vere (prima i link a cartelle, poi i link a file).
-#    Un link a una cartella dentro un framework (Versions/Current, Resources,
-#    Headers) diventerebbe comunque una copia nel bundle di Tauri.
-while IFS= read -r -d '' l; do
-  [ -L "$l" ] || continue
-  if [ -d "$l" ]; then
-    t="$l.tmpcopy"
-    cp -RL "$l" "$t"
-    rm -f "$l"
-    mv "$t" "$l"
+# 1a) libreria Python fuori dal framework
+INTERNAL="$(find "$DIR" -maxdepth 3 -type d -name _internal | head -1)"
+if [ -n "$INTERNAL" ] && [ -L "$INTERNAL/Python" ] && [ -d "$INTERNAL/Python.framework" ]; then
+  cp "$INTERNAL/Python" "$INTERNAL/Python.tmpcopy"     # cp segue il link
+  rm -f "$INTERNAL/Python"
+  mv "$INTERNAL/Python.tmpcopy" "$INTERNAL/Python"
+  # qualcuno carica la libreria dal percorso del framework?
+  usa_fw=""
+  while IFS= read -r -d '' f; do
+    # la libreria stessa ha come nome interno il percorso nel framework: non conta
+    case "$f" in "$INTERNAL/Python.framework/"*|"$INTERNAL/Python") continue ;; esac
+    case "$(file -b "$f")" in
+      *Mach-O*) otool -L "$f" 2>/dev/null | tail -n +2 | grep -q 'Python\.framework/' \
+                  && usa_fw="$usa_fw $f" ;;
+    esac
+  done < <(find "$DIR" -type f -print0)
+  if [ -n "$usa_fw" ]; then
+    echo "ERRORE: questi binari richiamano Python.framework per percorso:$usa_fw"
+    echo "        il framework non si puo' togliere: serve un'altra soluzione"
+    exit 1
   fi
-done < <(find "$DIR" -type l -print0)
+  rm -rf "$INTERNAL/Python.framework"
+  echo ">> _internal/Python ora e' un file; Python.framework tolto"
+fi
 
+# 1b) altri framework con link interni: Tauri li romperebbe allo stesso modo
+if find "$DIR" -type d -name '*.framework' | grep -q .; then
+  echo "ERRORE: framework nel backend (Tauri ne copia i link come file):"
+  find "$DIR" -type d -name '*.framework'
+  exit 1
+fi
+
+# 1c) link restanti -> copie vere (prima le cartelle, poi i file)
+while IFS= read -r -d '' l; do
+  [ -L "$l" ] && [ -d "$l" ] || continue
+  cp -RL "$l" "$l.tmpcopy"
+  rm -f "$l"
+  mv "$l.tmpcopy" "$l"
+done < <(find "$DIR" -type l -print0)
 n_link=0
 while IFS= read -r -d '' l; do
   [ -L "$l" ] || continue
@@ -53,14 +81,9 @@ while IFS= read -r -d '' l; do
       ;;
   esac
 done < <(find "$DIR" -type l -print0)
-echo ">> link a binari sostituiti da copie: $n_link"
+echo ">> altri link a binari sostituiti da copie: $n_link"
 
-# 2) firma, uno per uno. Entitlements solo sugli eseguibili non servono sulle
-#    librerie ma non le danneggiano: si passano a tutti per semplicita'.
-#    Le firme dentro i framework restano legate al loro Info.plist (che ora e'
-#    una copia vera accanto a ogni copia del binario): si firma il file, non il
-#    framework intero, perche' i framework duplicati da Tauri non sono bundle
-#    regolari.
+# 2) firma, uno per uno (entitlements a tutti: sulle librerie non contano)
 TS="--timestamp"
 [ "$IDENTITY" = "-" ] && TS="--timestamp=none"
 LIST="$(mktemp "${TMPDIR:-/tmp}/rizzo-macho.XXXXXX")"
@@ -69,13 +92,8 @@ while IFS= read -r -d '' f; do
   case "$(file -b "$f")" in *Mach-O*) printf '%s\0' "$f" >> "$LIST" ;; esac
 done < <(find "$DIR" -type f -print0)
 echo ">> binari da firmare: $(tr -cd '\0' < "$LIST" | wc -c | tr -d ' ')"
-# I binari dei framework si firmano uno alla volta: firmarne due dello stesso
-# framework in parallelo farebbe scrivere due processi nello stesso _CodeSignature.
-SIGN=(codesign --force "$TS" --options runtime --entitlements "$ENT" --sign "$IDENTITY")
-tr '\0' '\n' < "$LIST" | { grep -v '\.framework/' || true; } | tr '\n' '\0' \
-  | xargs -0 -n 20 -P 8 "${SIGN[@]}"
-tr '\0' '\n' < "$LIST" | { grep '\.framework/' || true; } | tr '\n' '\0' \
-  | xargs -0 -n 1 "${SIGN[@]}"
+xargs -0 -n 20 -P 8 codesign --force "$TS" --options runtime \
+  --entitlements "$ENT" --sign "$IDENTITY" < "$LIST"
 
 # 3) controlli: nessun link rimasto, tutte le firme valide
 if find "$DIR" -type l | grep -q .; then
