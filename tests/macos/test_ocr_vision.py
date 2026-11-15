@@ -12,6 +12,7 @@ Tutti i valori sono SINTETICI.
 """
 
 import io
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -26,7 +27,7 @@ import pymupdf as fitz  # noqa: E402
 import ocr  # noqa: E402
 import pdf_export  # noqa: E402
 from test_ocr import (EMAIL, IBAN, SPOSTATO, _pixel_neri, rect_non_ruotato,  # noqa: E402
-                      scansione, scansione_ruotata)
+                      scansione, scansione_ruotata, testo_largo)
 from test_ora import APP, client  # noqa: E402
 
 ENGINE = ocr.default_engine()
@@ -91,6 +92,32 @@ class VisionVero(unittest.TestCase):
         iban = rect_non_ruotato(data, _rect(truth, IBAN))
         self.assertGreater(_pixel_neri(data, iban), 0)
         self.assertEqual(0, _pixel_neri(out, iban))
+
+    def test_testo_type3_come_l_atto(self):
+        """Testo VISIBILE in un Type 3 senza mappa Unicode e con i caratteri
+        larghi quanto il corpo, come l'atto: la casella sopra un dato non deve
+        portarsi via le lettere prima ("IBAN" restava "IBA"). Lo verifica Vision
+        rileggendo il PDF in uscita."""
+        data = testo_largo()
+
+        def rileggi(out, idx):
+            with fitz.open(stream=out, filetype="pdf") as d:
+                return ocr.ocr_pages(d, idx, ENGINE)[0]
+        with fitz.open(stream=data, filetype="pdf") as d:
+            res = ocr.analyze_doc(d, ENGINE)
+        self.assertEqual({0: ocr.UNREADABLE}, res.plan)
+        self.assertIn(IBAN, _compatto(res.pages[0].text))
+        out, rep = pdf_export.redact_pdf(data, {"[IBAN_1]": IBAN, "[EMAIL_1]": EMAIL},
+                                         ocr_pages=res.pages, ocr_verify=rileggi)
+        self.assertEqual([], rep["residual"])
+        self.assertEqual([], rep["ocr_unverified"])
+        self.assertEqual([1], rep["flattened"])
+        letto = rileggi(out, [0])[0].text
+        print("\n--- PDF in uscita riletto da Vision ---\n" + letto)
+        self.assertNotIn(IBAN, _compatto(letto))
+        self.assertNotIn(EMAIL, _compatto(letto))
+        for parola in ("conto", "IBAN", "intestato", "scrivere", "a", "entro"):
+            self.assertRegex(letto, r"(?<!\w)%s(?!\w)" % re.escape(parola))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

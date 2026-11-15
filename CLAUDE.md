@@ -136,7 +136,11 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   `/analyze`, `/pdf` sullo stesso file fanno l'OCR una volta. L'analisi usa il testo letto
   (`pdf_text.collect_readable_text(page_texts=...)`). In `pdf_export.redact_pdf(ocr_pages=,
   ocr_verify=)` sulle pagine OCR: (0) via il **testo invisibile** dello scanner (anche "rovinato" può
-  tenere le cifre di un IBAN), (1) redazione normale del layer, (2) redazione sui **riquadri delle
+  tenere le cifre di un IBAN), (0b) se resta testo **visibile** illeggibile la pagina diventa
+  un'**immagine** a 300 dpi (`_flatten_to_image`, report `flattened`): in quei font (es. Type 3
+  dell'atto, ogni carattere largo quanto il corpo) `apply_redactions()` toglierebbe anche le lettere
+  accanto alla casella ("numero" → "nume"), sull'immagine sbianca solo i pixel dentro,
+  (1) redazione normale del layer, (2) redazione sui **riquadri delle
   parole** dell'OCR con margine (`OCR_PAD`), `apply_redactions()` sbianca i pixel dell'immagine sotto,
   (3) **rilettura con l'OCR** del PDF in uscita: valore ancora leggibile → `residual`; pagina non
   riletta → `ocr_unverified` (avviso nell'UI).

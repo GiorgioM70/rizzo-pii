@@ -529,6 +529,202 @@ class RedazioneScansione(unittest.TestCase):
         raise AssertionError(parola)
 
 
+# --------------------------------------------------------------------------- #
+# Testo VISIBILE con riquadri dei caratteri piu' larghi del segno (l'atto)
+# --------------------------------------------------------------------------- #
+PAROLE_T3 = ["Avanti", "BETA", "numero"]
+T3_X0, T3_PASSO, T3_LETTERE, T3_Y = 72.0, 19.0, 4, 700.0   # y del PDF (dal basso)
+
+
+def atto_type3(rotazione=0):
+    """Come l'atto vero: testo VISIBILE in un font Type 3 senza mappa Unicode,
+    ogni carattere largo quanto il corpo (10 pt) e le lettere riavvicinate a
+    4 pt con la crenatura del TJ. Il segno di ogni lettera e' un rettangolo pieno
+    di 3,5 x 7 pt. Le parole stanno a 3,5 pt l'una dall'altra, quindi il
+    riquadro dell'ultima lettera di una parola sborda sulla successiva.
+    Ritorna (bytes, verita' per OcrFinto, {parola: [rect di ogni lettera]})."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+
+    def oggetto(testo, stream=None):
+        x = doc.get_new_xref()
+        doc.update_object(x, testo)
+        if stream is not None:
+            doc.update_stream(x, stream)
+        return x
+    glifo = oggetto("<<>>", b"1 0 0 0 0.35 0.7 d1 0 0 0.35 0.7 re f")
+    font = oggetto("<</Type/Font/Subtype/Type3/FontBBox[0 0 1 1]"
+                   "/FontMatrix[1 0 0 1 0 0]/CharProcs<</g %d 0 R>>"
+                   "/Encoding<</Type/Encoding/Differences[97/g]>>"
+                   "/FirstChar 97/LastChar 97/Widths[1]>>" % glifo)
+    ops, lettere = [], {}
+    for i, parola in enumerate(PAROLE_T3):
+        x = T3_X0 + i * T3_PASSO
+        tj = " 600 ".join(["(a)"] * T3_LETTERE)
+        ops.append("BT /T3 10 Tf 1 0 0 1 %.2f %.2f Tm [%s] TJ ET" % (x, T3_Y, tj))
+        lettere[parola] = [fitz.Rect(x + k * 4, 842 - T3_Y - 7, x + k * 4 + 3.5, 842 - T3_Y)
+                           for k in range(T3_LETTERE)]
+    contenuto = oggetto("<<>>", " ".join(ops).encode())
+    doc.xref_set_key(page.xref, "Contents", "%d 0 R" % contenuto)
+    doc.xref_set_key(page.xref, "Resources", "<</Font<</T3 %d 0 R>>>>" % font)
+    W, H = 595.0, 842.0
+    truth = [[(p, [r[0].x0 / W, r[0].y0 / H, (r[-1].x1 - r[0].x0) / W, 7 / H])
+              for p, r in lettere.items()]]
+    if rotazione:
+        page.set_rotation(rotazione)
+        truth = ruota_verita(truth, page)
+    data = doc.tobytes()
+    doc.close()
+    return data, truth, lettere
+
+
+def testo_largo(righe=RIGHE, corpo=10.0):
+    """Lettere VERE in un font Type 3 come quello dell'atto: ogni glifo disegna
+    la lettera Helvetica, /Widths di 1 em per tutti, la crenatura del TJ le
+    riporta alla distanza giusta e nessuna mappa Unicode. A video e' lo stesso
+    testo di _sorgente() (stesse posizioni, quindi stessa verita' per
+    OcrFinto), estratto e' senza senso, e per MuPDF ogni carattere e' largo
+    quanto il corpo. Lo legge anche Vision (tests/macos)."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+
+    def oggetto(testo, stream=None):
+        x = doc.get_new_xref()
+        doc.update_object(x, testo)
+        if stream is not None:
+            doc.update_stream(x, stream)
+        return x
+    helv = oggetto("<</Type/Font/Subtype/Type1/BaseFont/Helvetica/Encoding/WinAnsiEncoding>>")
+    # codici 1, 2, 3... nell'ordine in cui compaiono, come nell'atto: niente
+    # mappa Unicode, estratto e' una fila di caratteri di controllo
+    lettere = sorted({c for r in righe for c in r})
+    codice = {c: i + 1 for i, c in enumerate(lettere)}
+    codici = sorted(codice.values())
+    procs = {}
+    for c in lettere:
+        e = c.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        procs[codice[c]] = oggetto("<<>>", ("1 0 0 -0.3 1 1 d1 BT /H 1 Tf 0 0 Td (%s) Tj ET"
+                                            % e).encode("latin-1"))
+    font = oggetto(
+        "<</Type/Font/Subtype/Type3/FontBBox[0 0 1 1]/FontMatrix[1 0 0 1 0 0]"
+        "/CharProcs<<%s>>/Encoding<</Type/Encoding/Differences[%s]>>"
+        "/FirstChar %d/LastChar %d/Widths[%s]/Resources<</Font<</H %d 0 R>>>>>>"
+        % (" ".join("/g%d %d 0 R" % (k, x) for k, x in procs.items()),
+           " ".join("%d/g%d" % (k, k) for k in codici),
+           codici[0], codici[-1], " ".join(["1"] * (codici[-1] - codici[0] + 1)), helv))
+    ops, y = [], 842 - 100
+    for r in righe:
+        parti = []
+        for c in r:
+            vero = fitz.get_text_length(c, fontname="helv", fontsize=1) * 1000
+            parti.append("<%02x> %.1f" % (codice[c], 1000 - vero))
+        ops.append("BT /T3 %.1f Tf 1 0 0 1 60 %.1f Tm [%s] TJ ET" % (corpo, y, " ".join(parti)))
+        y -= 22
+    contenuto = oggetto("<<>>", "\n".join(ops).encode("latin-1"))
+    doc.xref_set_key(page.xref, "Contents", "%d 0 R" % contenuto)
+    doc.xref_set_key(page.xref, "Resources", "<</Font<</T3 %d 0 R>>>>" % font)
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+@unittest.skipIf(fitz is None, "PyMuPDF non disponibile")
+class TestoVisibileIllegibile(unittest.TestCase):
+    def _redigi(self, rotazione=0):
+        data, truth, lettere = atto_type3(rotazione)
+        with fitz.open(stream=data, filetype="pdf") as d:
+            # il riquadro di un carattere e' largo quanto il corpo, non il segno
+            ch = d[0].get_texttrace()[0]["chars"][0]
+            self.assertGreater(ch[3][2] - ch[3][0], 9)
+            # (poche lettere e nessuna immagine: il piano non la sceglierebbe,
+            # nell'atto la sceglie la qualita' del testo; qui la si legge e basta)
+            pagine = ocr.ocr_pages(d, [0], OcrFinto(truth))[0]
+        self.assertIn("BETA", pagine[0].text)
+
+        def rileggi(out, idx):
+            with fitz.open(stream=out, filetype="pdf") as d:
+                return ocr.ocr_pages(d, idx, OcrFinto(truth))[0]
+        out, rep = pdf_export.redact_pdf(data, {"[ID_1]": "BETA"},
+                                         ocr_pages=pagine, ocr_verify=rileggi)
+        return data, out, rep, lettere
+
+    def _controlla(self, data, out, rep, lettere):
+        self.assertEqual(1, rep["occurrences"])
+        self.assertEqual([], rep["residual"])
+        for r in lettere["BETA"]:
+            self.assertEqual(0, _pixel_neri(out, r))
+        # TUTTE le lettere delle parole vicine restano, comprese l'ultima prima
+        # della casella e la prima dopo ("Avanti me" non diventa "Avanti m")
+        for parola in ("Avanti", "numero"):
+            for k, r in enumerate(lettere[parola]):
+                self.assertGreater(_pixel_neri(data, r), 0)
+                self.assertGreater(_pixel_neri(out, r), 0, "%s, lettera %d" % (parola, k + 1))
+        with fitz.open(stream=out, filetype="pdf") as d:
+            self.assertEqual("[ID_1]", d[0].get_text().strip())   # niente testo illeggibile
+        self.assertEqual([1], rep["flattened"])
+
+    def test_casella_non_mangia_le_lettere_vicine(self):
+        self._controlla(*self._redigi())
+
+    def test_casella_non_mangia_le_lettere_vicine_ruotata(self):
+        data, out, rep, lettere = self._redigi(rotazione=90)
+        with fitz.open(stream=out, filetype="pdf") as d:
+            self.assertEqual(90, d[0].rotation)
+        self._controlla(data, out, rep, lettere)
+
+    def test_lettere_vere_come_l_atto(self):
+        """Stesso documento di _sorgente() ma in un Type 3 come quello dell'atto:
+        il piano lo manda all'OCR, le caselle coprono IBAN ed email e le parole
+        accanto restano intere ("IBAN" non diventa "IBA")."""
+        data = testo_largo()
+        src = _sorgente()
+        truth = _verita(src[0])
+        lettere = {}
+        for b in src[0].get_text("rawdict")["blocks"]:
+            for ln in b.get("lines", []):
+                for sp in ln["spans"]:
+                    for ch in sp["chars"]:
+                        lettere.setdefault(ch["c"], []).append(fitz.Rect(ch["bbox"]))
+        parole = {w[4]: fitz.Rect(w[:4]) for w in src[0].get_text("words")}
+        src.close()
+        with fitz.open(stream=data, filetype="pdf") as d:
+            res = ocr.analyze_doc(d, OcrFinto(truth))
+        self.assertEqual({0: ocr.UNREADABLE}, res.plan)
+
+        def rileggi(out, idx):
+            with fitz.open(stream=out, filetype="pdf") as d:
+                return ocr.ocr_pages(d, idx, OcrFinto(truth))[0]
+        out, rep = pdf_export.redact_pdf(data, {"[IBAN_1]": IBAN, "[EMAIL_1]": EMAIL},
+                                         ocr_pages=res.pages, ocr_verify=rileggi)
+        self.assertEqual([], rep["residual"])
+        self.assertEqual(0, _pixel_neri(out, parole[IBAN]))
+        self.assertEqual(0, _pixel_neri(out, parole[EMAIL]))
+        # l'ultima lettera prima di ogni casella: la "N" di IBAN, la "a" di "a"
+        n = [r for r in lettere["N"] if parole["IBAN"].contains(r)][0]
+        a = [r for r in lettere["a"] if r.y0 > parole[EMAIL].y0 - 2
+             and r.x1 <= parole[EMAIL].x0][-1]
+        for r in (n, a):
+            self.assertGreater(_pixel_neri(data, r), 0)
+            self.assertGreater(_pixel_neri(out, r), 0)
+        with fitz.open(stream=out, filetype="pdf") as d:
+            txt = d[0].get_text()
+        self.assertIn("[IBAN_1]", txt)
+        self.assertNotIn("\x01", txt)                 # il testo illeggibile e' uscito
+        self.assertEqual([1], rep["flattened"])
+
+    def test_senza_immagine_le_lettere_sparivano(self):
+        """La causa, per memoria: redazione diretta sul testo Type 3."""
+        data, truth, lettere = atto_type3()
+        with fitz.open(stream=data, filetype="pdf") as d:
+            p = d[0]
+            beta = fitz.Rect(lettere["BETA"][0].x0 - 1, 0, lettere["BETA"][-1].x1 + 1, 842)
+            beta = fitz.Rect(beta.x0, lettere["BETA"][0].y0 - 1, beta.x1, lettere["BETA"][0].y1 + 1)
+            p.add_redact_annot(beta, fill=False)
+            p.apply_redactions()
+            out = d.tobytes()
+        self.assertEqual(0, _pixel_neri(out, lettere["Avanti"][-1]))
+
+
 @unittest.skipIf(APP is None or fitz is None, "app.py/PyMuPDF non disponibili")
 class ScansioneHttp(unittest.TestCase):
     def setUp(self):

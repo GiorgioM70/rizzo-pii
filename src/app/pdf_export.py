@@ -38,8 +38,10 @@ Deve essere vuota; l'UI avvisa se non lo e'.
 
 Pagine scansionate (`ocr_pages`, solo macOS, vedi ocr.py): i valori si cercano
 anche nel testo letto dall'OCR e si coprono i riquadri delle parole; i pixel
-dell'immagine sotto vengono sbiancati da apply_redactions(). Poi le pagine si
-RILEGGONO con l'OCR (`ocr_verify`): un valore ancora leggibile e' un residuo.
+dell'immagine sotto vengono sbiancati da apply_redactions(). Se la pagina ha
+ancora testo VISIBILE (illeggibile, per questo e' andata all'OCR) prima diventa
+un'immagine: vedi _flatten_to_image. Poi le pagine si RILEGGONO con l'OCR
+(`ocr_verify`): un valore ancora leggibile e' un residuo.
 
 Limiti noti (= punti 2-4 della issue #7):
   - testo dentro immagini raster SENZA OCR (Windows/Linux, o OCR fallito): non
@@ -423,6 +425,53 @@ def _strip_invisible_text(page):
     return n
 
 
+# Risoluzione dell'immagine che prende il posto di una pagina col testo visibile
+# illeggibile: la stessa con cui la legge l'OCR (ocr.OCR_DPI).
+FLATTEN_DPI = 300
+
+
+def _visible_chars(page):
+    try:
+        spans = page.get_texttrace()
+    except Exception:
+        return 0
+    return sum(len(sp.get("chars") or ()) for sp in spans if sp.get("type") != 3)
+
+
+def _flatten_to_image(page):
+    """Pagina letta con l'OCR che ha ancora testo VISIBILE (illeggibile: font
+    senza mappa Unicode, lettere spostate) -> la stessa pagina come immagine.
+
+    Perche': in quel testo i caratteri hanno spesso riquadri molto piu' larghi
+    del segno vero (nell'atto: font Type 3 con ogni carattere largo quanto il
+    corpo, ~10 pt, e le lettere avvicinate a ~3 pt con la crenatura).
+    apply_redactions() toglie OGNI carattere il cui riquadro tocca la casella,
+    quindi la casella sopra un dato si portava via anche 2-3 lettere prima e
+    dopo ("numero" -> "nume", "Fiscale" -> "Fisca"). Su un'immagine invece si
+    sbiancano solo i pixel dentro la casella. In piu' il testo illeggibile esce
+    dal file: non tiene piu' in chiaro nemmeno le cifre di un IBAN.
+
+    Si renderizza senza annotazioni (ripulite a parte), si svuotano contenuto e
+    risorse della pagina e si mette l'immagine. Ritorna la pagina ricaricata, o
+    None se non c'era testo visibile."""
+    if not _visible_chars(page):
+        return None
+    doc, rot = page.parent, page.rotation
+    if rot:
+        page.set_rotation(0)        # immagine e redazioni nelle coordinate non ruotate
+    pix = page.get_pixmap(dpi=FLATTEN_DPI, annots=False)
+    xref = doc.get_new_xref()
+    doc.update_object(xref, "<<>>")
+    doc.update_stream(xref, b"")
+    doc.xref_set_key(page.xref, "Contents", f"{xref} 0 R")
+    doc.xref_set_key(page.xref, "Resources", "<<>>")
+    page = doc.reload_page(page)
+    page.insert_image(page.rect, pixmap=pix)
+    if rot:
+        page.set_rotation(rot)
+    return page
+
+
 def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
                ocr_pages=None, ocr_verify=None):
     """PDF originale -> PDF con redazione vera + placeholder al posto delle PII.
@@ -449,6 +498,8 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
         "ocr_pages":      pagine (da 1) redatte con i riquadri dell'OCR,
         "ocr_unverified": pagine (da 1) OCR la cui copertura non e' stata riletta,
         "invisible_chars": caratteri del testo invisibile dello scanner tolti,
+        "flattened":      pagine (da 1) OCR col testo visibile illeggibile,
+                          trasformate in immagine prima di coprire,
         "annots":         sostituzioni nelle annotazioni,
         "widgets":        sostituzioni nei campi modulo,
         "toc":            sostituzioni nei segnalibri,
@@ -517,13 +568,21 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
         return n
 
     n_invisible = 0
-    for pno, page in enumerate(doc):
+    flattened = []
+    for pno in range(doc.page_count):
+        page = doc[pno]
         taken = []
         # 0) pagina scansionata: via il testo invisibile dello scanner, PRIMA di
         #    disegnare le caselle (dopo, la sua rimozione toglierebbe anche le
         #    etichette dei segnaposto che ci stanno sopra)
         if pno in ocr_pages:
             n_invisible += _strip_invisible_text(page)
+            # 0b) testo VISIBILE illeggibile: la pagina diventa un'immagine,
+            #     cosi' le caselle dell'OCR non si portano via le lettere vicine
+            flat = _flatten_to_image(page)
+            if flat is not None:
+                page = flat
+                flattened.append(pno + 1)
         # 1) layer testuale (anche sulle scansioni: il testo nascosto dello
         #    scanner va tolto dove contiene i valori)
         text, boxes = _page_char_index(page)
@@ -558,6 +617,7 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
         "residual": residual,
         "ocr_pages": [i + 1 for i in sorted(ocr_pages)],
         "invisible_chars": n_invisible,
+        "flattened": flattened,
         "ocr_unverified": unverified,
         "annots": n_annots,
         "widgets": n_widgets,
