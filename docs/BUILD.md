@@ -153,7 +153,7 @@ al posto di `nsis` — la conf Tauri resta su NSIS per Windows e qui si sovrascr
 
 ```bash
 # prerequisiti (una volta)
-xcode-select --install                 # Command Line Tools
+xcode-select --install                 # Command Line Tools (anche swiftc, per l'OCR)
 # + Rust (https://rustup.rs) e Node.js 18+
 
 bash build_macos.sh                    # .app + .dmg
@@ -165,10 +165,16 @@ Output: `tauri/src-tauri/target/release/bundle/macos/Rizzo PII.app` e `.../dmg/*
 Note specifiche di macOS:
 - **Niente indice PyTorch CPU**: su macOS la ruota di default è già CPU/MPS, quindi lo script
   installa `torch` senza `--index-url` (a differenza di Windows/Linux).
-- **Firma**: il bundle **non è firmato né notarizzato**. In locale si apre senza problemi (un file
-  che non arriva da internet non ha l'attributo di quarantena). Copiandolo su un altro Mac serve
-  "tasto destro → Apri", oppure `xattr -dr com.apple.quarantine "Rizzo PII.app"`. Per distribuirlo
-  davvero servono un Developer ID e la notarizzazione Apple.
+- **OCR delle scansioni**: lo script compila `src/app/ocr_macos/main.swift` (framework Vision,
+  di sistema) in `build/ocr/rizzo-ocr` e il spec lo include nel sidecar. Nessuna dipendenza Python
+  in più: una `.venv` già esistente va bene così. Senza `swiftc` la build si ferma.
+- **Firma**: se nel portachiavi c'è una "Developer ID Application" lo script firma con hardened
+  runtime e timestamp **ogni binario del backend** (librerie di torch, estensioni Python, OCR):
+  Tauri firma l'eseguibile principale ma non i file dentro Resources, e la notarizzazione li
+  rifiuterebbe. Poi firma anche il `.dmg`. Notarizzazione: `xcrun notarytool submit <dmg>
+  --keychain-profile <profilo> --wait` e poi `xcrun stapler staple <dmg>`. Senza Developer ID la
+  build resta ad-hoc: in locale si apre, su un altro Mac serve "tasto destro → Apri", oppure
+  `xattr -dr com.apple.quarantine "Rizzo PII.app"`.
 - **Architettura**: il `.app` esce per l'arch della macchina che compila (arm64 su Apple Silicon).
   Per un binario universale servirebbero due build di PyInstaller + `lipo`.
 - **Porta 5005**: se stai già facendo girare `python src/app/app.py` in sviluppo, fermalo prima di

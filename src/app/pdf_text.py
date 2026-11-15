@@ -15,16 +15,25 @@ Nei PDF fillable (AcroForm) il valore sta nel widget, non nel content stream:
 REDACT_ANNOT = 12
 
 
-def collect_readable_text(doc, redact_annot_type=REDACT_ANNOT):
+def collect_readable_text(doc, redact_annot_type=REDACT_ANNOT, page_texts=None):
     """TUTTO il testo leggibile: pagine + annotazioni + campi modulo + segnalibri.
 
     `doc` e' un iterabile di pagine con `get_text()`, `annots()`, `widgets()`
     e (sul documento) `get_toc(simple=True)`: il contratto di PyMuPDF, senza
-    importarlo. NB: non vede il testo dentro immagini raster.
+    importarlo. Da solo non vede il testo dentro le immagini raster.
+
+    `page_texts` ({indice da 0: testo}) sostituisce il testo di pagina con quello
+    letto dall'OCR (ocr.py): sulle pagine scansionate il layer dello scanner e'
+    vuoto, invisibile o con caratteri senza senso, e l'analisi deve lavorare su
+    cio' che si vede.
     """
     parts = []
-    for page in doc:
-        parts.append(page.get_text() or "")
+    page_texts = page_texts or {}
+    for i, page in enumerate(doc):
+        if i in page_texts:
+            parts.append(page_texts[i] or "")
+        else:
+            parts.append(page.get_text() or "")
         try:
             for a in page.annots() or ():
                 if a.type[0] == redact_annot_type:

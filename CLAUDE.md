@@ -116,10 +116,35 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   `{doc_id, n_pages, residual, skipped}`: l'anteprima a destra e il bottone "Scarica PDF" usano
   **la stessa copia**, quindi guardare il PDF e poi scaricarlo costa **una sola** anonimizzazione
   (il download passa da `/doc/<id>/file.pdf`). `/pdf` resta invariato per chi usa l'API.
-- **PDF misti (pagine scansionate)**: `pdf_text.pages_without_text()` trova le pagine con immagini e
-  < 40 caratteri di testo (soglia della PR upstream #105). Niente OCR: le PII li' dentro restano anche
-  nel PDF redatto, quindi `/preview`, `/analyze`, `/pdf/preview` rispondono `pages_no_text` e `/pdf`
-  manda `X-PII-NoText-Pages`; l'UI mostra l'avviso.
+- **Pagine scansionate → OCR (solo macOS)** — `ocr.py` (niente fitz/torch: testabile con finti).
+  `plan_pages()` sceglie le pagine da leggere: **vuota** (immagini e < 40 caratteri, soglia della PR
+  upstream #105), **illeggibile** (testo che non passa il controllo di qualità: > 10% di glifi senza
+  mappa Unicode, < 55% di lettere/cifre, oppure da 20 parole latine in su < 28% di vocali, < 3% di
+  parole comuni o > 35% di parole impossibili — soglie e misure commentate in testa al modulo),
+  **invisibile** (immagini e ≥ 50% di caratteri in render mode 3 = l'OCR dello scanner sotto
+  l'immagine). Il caso tipico dell'atto scansionato: layer dello scanner con caratteri senza senso,
+  che prima superava la soglia dei 40 caratteri e passava per testo, senza avviso.
+  Motore: **`rizzo-ocr`**, eseguibile Swift col framework **Vision** (`src/app/ocr_macos/main.swift`,
+  livello accurato, it-IT + en-US): PNG della pagina (PyMuPDF, 300 dpi) sullo stdin → JSON con righe,
+  parole e riquadri normalizzati (origine in alto a sinistra). Un processo per pagina, 4 in parallelo.
+  Scelto al posto di pyobjc: nessuna dipendenza Python, niente hook PyInstaller con decine di `.so` da
+  firmare, confine PNG/JSON facile da sostituire nei test. `build_macos.sh` lo compila con `swiftc` in
+  `build/ocr/`, `build_sidecar.spec` lo mette in `_internal/ocr/` (su macOS è obbligatorio: senza, la
+  build si ferma). `ocr.helper_path()` lo cerca in `PII_OCR_HELPER`, nel bundle, in `build/ocr/`.
+  `PII_OCR=0` lo spegne. Su Windows/Linux non c'è: nessun errore, solo l'avviso.
+  In `app.py` il risultato sta in una **LRU in memoria** per hash del PDF (`_OCR_CACHE`): `/preview`,
+  `/analyze`, `/pdf` sullo stesso file fanno l'OCR una volta. L'analisi usa il testo letto
+  (`pdf_text.collect_readable_text(page_texts=...)`). In `pdf_export.redact_pdf(ocr_pages=,
+  ocr_verify=)` sulle pagine OCR: (0) via il **testo invisibile** dello scanner (anche "rovinato" può
+  tenere le cifre di un IBAN), (1) redazione normale del layer, (2) redazione sui **riquadri delle
+  parole** dell'OCR con margine (`OCR_PAD`), `apply_redactions()` sbianca i pixel dell'immagine sotto,
+  (3) **rilettura con l'OCR** del PDF in uscita: valore ancora leggibile → `residual`; pagina non
+  riletta → `ocr_unverified` (avviso nell'UI).
+  Risposte: `pages_ocr` (pagine lette), `pages_no_text` (pagine senza testo leggibile **non** lette:
+  le PII restano), `ocr_unverified`; header `X-PII-OCR-Pages`, `X-PII-OCR-Unverified`,
+  `X-PII-NoText-Pages`. `/health` ha `"ocr": true/false`. Test: `tests/test_ocr.py` (motore finto
+  che legge i pixel veri, pagine ruotate comprese) e `tests/macos/test_ocr_vision.py` (Vision vero,
+  fuori dalla discovery, lo lancia il workflow `ocr-macos`).
 - **Preferenze di anonimizzazione** → `prefs.json` nella config dir (`EXCLUDED_TAGS`,
   `MAPPING_ENABLED`). File **separato da `config.json`** perché Tauri riscrive quest'ultimo per
   intero quando si cambia porta dallo splash. Precedenza: campo nella richiesta > CLI > env > file.
@@ -159,8 +184,8 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   `X-PII-Residual` e `X-PII-Skipped`): (a) *residui* = valore ancora leggibile nell'output alla
   verifica finale; (b) *saltati* = valori con < 2 caratteri alfanumerici o di 2 sole cifre (es. "45"),
   non cercabili senza devastare il documento. Se in tutto il PDF non si trova **nessuna** occorrenza
-  → `422`, non un PDF "anonimizzato" che non lo è (caso tipico: scansione, serve OCR → punti 2-4
-  della issue). Nessuna dipendenza dal modello: `pdf_export.py` è testabile in isolamento.
+  → `422`, non un PDF "anonimizzato" che non lo è (caso tipico: scansione senza OCR, cioè fuori da
+  macOS → punti 2-4 della issue). Nessuna dipendenza dal modello: `pdf_export.py` è testabile in isolamento.
 - `serve.py` — entry **headless** (solo Flask, niente browser): è il backend dell'app Tauri; log su
   `backend.log` nella **cartella dati** di `server_config.config_dir()` (la stessa di `config.json`,
   mai nella home; anche `tauri.log` di lib.rs). Pre-check porta + `sys.exit(76)` se occupata.

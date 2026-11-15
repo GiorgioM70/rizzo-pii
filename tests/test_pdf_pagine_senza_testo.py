@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """PDF misti: le pagine scansionate (immagini senza testo) vanno segnalate.
 
-L'anonimizzazione lavora sul layer testuale e non c'e' OCR: le PII dentro una pagina
-immagine restano visibili anche nel PDF redatto. /preview, /analyze, /pdf/preview e
+L'anonimizzazione lavora sul layer testuale e, senza OCR (Windows/Linux, o OCR
+spento), le PII dentro una pagina immagine restano visibili anche nel PDF redatto. /preview, /analyze, /pdf/preview e
 /pdf lo dicono (pages_no_text / X-PII-NoText-Pages) e l'UI mostra l'avviso.
 Soglia (40 caratteri) ripresa dalla PR upstream #105.
 
@@ -68,10 +68,17 @@ class PdfMistoHttp(unittest.TestCase):
         self.c = client()
         self.p = patch.object(APP, "nlp", lambda chunks: [[] for _ in chunks])
         self.p.start()
+        # qui si prova l'avviso SENZA OCR (Windows/Linux): su macOS il motore vero
+        # leggerebbe la pagina. L'OCR ha i suoi test in test_ocr.py.
+        self.po = patch.object(APP, "OCR_ENGINE", False)
+        self.po.start()
+        APP._OCR_CACHE.clear()
         self.data = _pdf_misto()
 
     def tearDown(self):
         self.p.stop()
+        self.po.stop()
+        APP._OCR_CACHE.clear()
 
     def _file(self):
         return {"file": (io.BytesIO(self.data), "misto.pdf")}

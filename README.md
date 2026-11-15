@@ -493,7 +493,15 @@ Two things can leave a value in clear, and both raise a warning in the UI (respo
 `X-PII-Residual` and `X-PII-Skipped`): a value still readable in the output at the final check, and
 values too short to search safely (under 2 alphanumeric characters, or 2 bare digits like `45`).
 Metadata, XMP, annotations, form-field values and bookmark titles are scrubbed too, and embedded
-attachments are dropped. Text baked into a raster image cannot be redacted at all — if **no**
+attachments are dropped.
+
+**Scanned pages (macOS):** pages that are images, or whose text layer is invisible or garbled (the
+scanner's own OCR, broken font encodings), are read with Apple's built-in **Vision** OCR, fully
+offline. The PII found there is covered on the image itself (the pixels underneath are wiped), the
+scanner's invisible text is removed, and the redacted pages are **read again** by the OCR: anything
+still legible is reported as a residual. The responses list them in `pages_ocr` /
+`X-PII-OCR-Pages`. On Windows and Linux there is no OCR: those pages are flagged in
+`pages_no_text` / `X-PII-NoText-Pages` and the UI warns that their PII stays visible — and if **no**
 occurrence is found anywhere in the PDF the endpoint fails with `422` rather than handing you a file
 that only looks anonymized.
 
@@ -582,6 +590,8 @@ rizzo_pii/
 │   └─ app/                           local anonymization app
 │       ├─ app.py                     Flask server: reversible anonymization + regex/checksum net
 │       ├─ pdf_export.py              anonymized-PDF download: true redaction of the uploaded PDF
+│       ├─ ocr.py                     scanned pages: text-quality check + Apple Vision OCR (macOS)
+│       ├─ ocr_macos/main.swift       the `rizzo-ocr` helper (Vision), built by build_macos.sh
 │       ├─ serve.py                   headless entry (backend of the Tauri app, no browser)
 │       ├─ desktop_app.py             legacy PyInstaller entry (opens the browser)
 │       └─ assets/                    mascot (the hedgehog) and icons

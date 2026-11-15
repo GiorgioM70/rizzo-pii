@@ -68,7 +68,7 @@ const T = {
   go:"Anonimizza", clear:"Pulisci",
   out_title:"② Risultato", v_prev:"Anteprima", v_text:"Testo da copiare",
   v_pdf:"Anteprima PDF", v_raw:"Testo", v_opdf:"PDF censurato",
-  t_prev_loading:"Renderizzo il PDF…", t_prev_err:"Anteprima del PDF non disponibile",
+  t_prev_loading:"Leggo il PDF… (le pagine scansionate richiedono qualche secondo)", t_prev_err:"Anteprima del PDF non disponibile",
   t_pdf_render:"Genero il PDF anonimizzato…",
   t_pdf_locked:"PDF protetto da password: rimuovi la protezione e riprova",
   t_zoom_out:"Riduci zoom", t_zoom_in:"Aumenta zoom", t_zoom_reset:"Reimposta zoom",
@@ -77,7 +77,9 @@ const T = {
   copy:"Copia per ChatGPT", dl:"Scarica dizionario", dlpdf:"Scarica PDF anonimizzato",
   t_pdf_making:"Genero il PDF…", t_pdf_ok:"PDF anonimizzato scaricato",
   t_pdf_err:"Errore nella creazione del PDF",
-  t_no_text:p=>"ATTENZIONE: "+(p.length===1?"la pagina "+p[0]+" e' un'immagine":"le pagine "+p.join(", ")+" sono immagini")+" senza testo (scansione?): le PII che contiene restano visibili, anche nel PDF anonimizzato.",
+  t_no_text:p=>"ATTENZIONE: "+(p.length===1?"la pagina "+p[0]+" non ha":"le pagine "+p.join(", ")+" non hanno")+" testo leggibile (scansione?) e qui non c'e' l'OCR: le PII che contengono restano visibili, anche nel PDF anonimizzato.",
+  t_ocr:p=>(p.length===1?"Pagina "+p[0]+" letta":"Pagine "+p.join(", ")+" lette")+" con l'OCR (scansione): il riconoscimento puo' sbagliare, controlla il risultato prima di condividerlo.",
+  t_ocr_unverified:p=>"ATTENZIONE: "+(p.length===1?"sulla pagina "+p[0]:"sulle pagine "+p.join(", "))+" (scansione) non e' stato possibile ricontrollare con l'OCR che le PII siano coperte: verifica il PDF a occhio prima di condividerlo.",
   t_pdf_warn:(r,s)=>"PDF scaricato · ATTENZIONE: "+(r+s)+" valori sono rimasti in chiaro"
     +" ("+r+" non redatti, "+s+" troppo corti per essere cercati): controlla il file"
     +" prima di condividerlo",
@@ -135,7 +137,7 @@ const T = {
   go:"Anonymize", clear:"Clear",
   out_title:"② Result", v_prev:"Preview", v_text:"Text to copy",
   v_pdf:"PDF preview", v_raw:"Text", v_opdf:"Redacted PDF",
-  t_prev_loading:"Rendering the PDF…", t_prev_err:"PDF preview not available",
+  t_prev_loading:"Reading the PDF… (scanned pages take a few seconds)", t_prev_err:"PDF preview not available",
   t_pdf_render:"Building the anonymized PDF…",
   t_pdf_locked:"Password-protected PDF: remove the protection and try again",
   t_zoom_out:"Zoom out", t_zoom_in:"Zoom in", t_zoom_reset:"Reset zoom",
@@ -144,7 +146,9 @@ const T = {
   copy:"Copy for ChatGPT", dl:"Download dictionary", dlpdf:"Download anonymized PDF",
   t_pdf_making:"Building the PDF…", t_pdf_ok:"Anonymized PDF downloaded",
   t_pdf_err:"Error while creating the PDF",
-  t_no_text:p=>"WARNING: "+(p.length===1?"page "+p[0]+" is an image":"pages "+p.join(", ")+" are images")+" with no text (scanned?): any PII on them stays visible, in the anonymized PDF too.",
+  t_no_text:p=>"WARNING: "+(p.length===1?"page "+p[0]+" has":"pages "+p.join(", ")+" have")+" no readable text (scanned?) and OCR is not available here: any PII on them stays visible, in the anonymized PDF too.",
+  t_ocr:p=>(p.length===1?"Page "+p[0]:"Pages "+p.join(", "))+" read with OCR (scanned): recognition can make mistakes, check the result before sharing it.",
+  t_ocr_unverified:p=>"WARNING: on "+(p.length===1?"page "+p[0]:"pages "+p.join(", "))+" (scanned) OCR could not re-check that the PII are covered: inspect the PDF before sharing it.",
   t_pdf_warn:(r,s)=>"PDF downloaded · WARNING: "+(r+s)+" values were left in clear"
     +" ("+r+" not redacted, "+s+" too short to be searched safely): check the file"
     +" before sharing it",
@@ -231,10 +235,16 @@ function hue(s){let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))%360;return h;}
 function colors(label){const h=hue(label);
   return {bg:`hsl(${h} 56% 96%)`,bd:`hsl(${h} 42% 81%)`,tx:`hsl(${h} 40% 38%)`};}
 
-/* pagine immagine senza testo in un PDF (misto o scansionato): senza OCR le PII li'
-   dentro non si vedono e restano anche nel PDF anonimizzato. Va detto, sempre. */
-function warnNoText(d){const p=(d&&d.pages_no_text)||[];
-  if(p.length)toast(T[L].t_no_text(p),false,12000);}
+/* pagine senza testo leggibile in un PDF (misto o scansionato). Con l'OCR (macOS)
+   vengono lette e lo si dice, perche' il riconoscimento puo' sbagliare; senza, le
+   PII li' dentro restano anche nel PDF anonimizzato. Va detto, sempre.
+   Ritorna true se ha mostrato qualcosa. */
+function warnNoText(d){
+  const p=(d&&d.pages_no_text)||[], u=(d&&d.ocr_unverified)||[], o=(d&&d.pages_ocr)||[];
+  if(p.length){toast(T[L].t_no_text(p),false,12000);return true;}
+  if(u.length){toast(T[L].t_ocr_unverified(u),false,12000);return true;}
+  if(o.length){toast(T[L].t_ocr(o),true,7000);return true;}
+  return false;}
 function toast(msg,ok=true,ms=1800){const t=$('toast');t.textContent=msg;t.className='show'+(ok?' ok':'');
   clearTimeout(t._t);t._t=setTimeout(()=>t.className='',ms);}
 
@@ -497,8 +507,7 @@ $('dlpdf').onclick=async()=>{
     // residui = valori ancora leggibili nell'output; saltati = valori troppo corti
     // per essere cercati senza devastare il documento. Entrambi restano IN CHIARO.
     if(d.residual+d.skipped>0)toast(T[L].t_pdf_warn(d.residual,d.skipped),false,9000);
-    else if((d.pages_no_text||[]).length)warnNoText(d);
-    else toast(tt('t_pdf_ok'));
+    else if(!warnNoText(d))toast(tt('t_pdf_ok'));
   }finally{btn.disabled=false;btn.innerHTML=old;}
 };
 

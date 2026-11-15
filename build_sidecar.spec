@@ -19,6 +19,16 @@ datas += [("src/app/assets", "assets")]
 datas += [("src/app/static", "static")]   # UI: index.html + app.css + app.js
 hiddenimports += ["pymupdf", "fitz", "flask", "sklearn.utils._typedefs"]
 
+# OCR delle scansioni (solo macOS): eseguibile Swift col framework Vision, compilato
+# da build_macos.sh in build/ocr/. Finisce in _internal/ocr/rizzo-ocr, dove lo
+# cerca ocr.helper_path(). Su macOS e' obbligatorio: una build che parte senza
+# darebbe un'app che non legge le scansioni senza che nessuno se ne accorga.
+import sys, os
+if sys.platform == "darwin":
+    if not os.path.isfile("build/ocr/rizzo-ocr"):
+        raise SystemExit("ERRORE: build/ocr/rizzo-ocr mancante: lancia la build con build_macos.sh")
+    binaries += [("build/ocr/rizzo-ocr", "ocr")]
+
 excludes = [
     "tensorflow", "tensorflow_intel", "tf_keras", "keras", "jax", "jaxlib", "flax",
     "vllm", "FlagEmbedding", "flagembedding", "torchvision", "torchaudio",

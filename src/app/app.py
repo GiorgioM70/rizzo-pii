@@ -60,6 +60,7 @@ from flask import (Flask, jsonify, render_template_string, request,
                    send_from_directory)
 
 import local_guard
+import ocr
 import pdf_export
 import pdf_text
 import server_config
@@ -254,6 +255,67 @@ def _page_png(d, n, dpi=PREVIEW_DPI):
         with _DOCS_LOCK:
             d["pages"][key] = png
     return png
+
+
+# --------------------------------------------------------------------------- #
+# OCR delle pagine scansionate (ocr.py: macOS Vision, altrove niente)
+#
+# /preview, /analyze e /pdf(/preview) ricevono lo stesso file: l'OCR si fa una
+# volta sola e il risultato resta in una LRU in memoria, chiave = hash dei bytes.
+# Come i documenti, mai su disco. Il motore si sceglie al primo uso (OCR_ENGINE
+# lo sovrascrive nei test).
+# --------------------------------------------------------------------------- #
+MAX_OCR_DOCS = 6
+_OCR_CACHE = OrderedDict()     # sha256 -> ocr.OcrResult
+_OCR_LOCK = threading.Lock()   # cache
+_OCR_RUN = threading.Lock()    # un documento alla volta: niente OCR doppio in parallelo
+OCR_ENGINE = None              # None = scegli al primo uso; False = spento
+_OCR_ENGINE_READY = False
+
+
+def _ocr_engine():
+    global OCR_ENGINE, _OCR_ENGINE_READY
+    if OCR_ENGINE is None and not _OCR_ENGINE_READY:
+        OCR_ENGINE = ocr.default_engine() or False
+        _OCR_ENGINE_READY = True
+    return OCR_ENGINE or None
+
+
+def _ocr_for(data):
+    """ocr.OcrResult del PDF `data` (vuoto se non si apre o e' protetto)."""
+    key = hashlib.sha256(data).hexdigest()
+    with _OCR_LOCK:
+        hit = _OCR_CACHE.get(key)
+        if hit is not None:
+            _OCR_CACHE.move_to_end(key)
+            return hit
+    with _OCR_RUN:
+        with _OCR_LOCK:
+            hit = _OCR_CACHE.get(key)
+        if hit is not None:
+            return hit
+        try:
+            with fitz.open(stream=data, filetype="pdf") as doc:
+                if doc.needs_pass:
+                    return ocr.OcrResult()
+                res = ocr.analyze_doc(doc, _ocr_engine())
+        except Exception:
+            return ocr.OcrResult()
+        with _OCR_LOCK:
+            _OCR_CACHE[key] = res
+            while len(_OCR_CACHE) > MAX_OCR_DOCS:
+                _OCR_CACHE.popitem(last=False)
+    return res
+
+
+def _ocr_reread(pdf_bytes, indices):
+    """Verifica: rilegge con l'OCR le pagine del PDF redatto (niente cache)."""
+    eng = _ocr_engine()
+    if eng is None:
+        return {}
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        pages, _failed = ocr.ocr_pages(doc, indices, eng)
+    return pages
 
 
 # --------------------------------------------------------------------------- #
@@ -647,6 +709,7 @@ def health():
         "tags": len(TAG_NAMES),
         "excluded_tags": excl,
         "mapping_enabled": mapping,
+        "ocr": _ocr_engine() is not None,      # OCR delle scansioni (solo macOS)
     }
     return jsonify(body), (200 if ready else 503)
 
@@ -673,7 +736,8 @@ def _text_from_bytes(name, data):
                 raise PdfLocked("PDF protetto da password: rimuovi la protezione e riprova.")
             # Non solo page.get_text(): nei PDF fillable il valore sta nei
             # widget AcroForm (issue #85). Stesso contratto di pdf_export.
-            return pdf_text.collect_readable_text(doc)
+            # Le pagine scansionate entrano col testo letto dall'OCR.
+            return pdf_text.collect_readable_text(doc, page_texts=_ocr_for(data).texts())
     if ext in TEXT_EXTS or not ext:
         # utf-16 solo col BOM: senza, il codec accetta qualunque sequenza di lunghezza pari
         # e si mangia i .txt a 8 bit. cp1252 prima di latin-1: e' quello che scrivono Word
@@ -699,17 +763,19 @@ def _text_from_bytes(name, data):
 
 
 def _no_text_pages(name, data):
-    """Pagine (da 1) con immagini ma senza testo estraibile: le PII li' dentro NON
-    vengono anonimizzate (niente OCR). Vuota se non e' un PDF o non si apre."""
+    """Pagine (da 1) senza testo leggibile (scansioni, testo con caratteri senza
+    senso) che l'OCR NON ha letto: le PII li' dentro non vengono anonimizzate.
+    Su macOS con l'OCR attivo di norma e' vuota. Vuota se non e' un PDF."""
     if not data or not _is_pdf(name, data):
         return []
-    try:
-        with fitz.open(stream=data, filetype="pdf") as doc:
-            if doc.needs_pass:
-                return []
-            return pdf_text.pages_without_text(doc)
-    except Exception:
+    return _ocr_for(data).warn_pages()
+
+
+def _ocr_page_numbers(name, data):
+    """Pagine (da 1) lette con l'OCR."""
+    if not data or not _is_pdf(name, data):
         return []
+    return _ocr_for(data).ocr_pages_1()
 
 
 class PdfLocked(ValueError):
@@ -732,12 +798,13 @@ def _uploaded_file():
 @app.route("/analyze", methods=["POST"])
 def analyze_route():
     up = _uploaded_file()
-    no_text = []
+    no_text, ocr_done = [], []
     if up is not None:
         try:
             name, data = up.filename, up.read()
             text = _text_from_bytes(name, data)
             no_text = _no_text_pages(name, data)
+            ocr_done = _ocr_page_numbers(name, data)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception as e:                       # PDF corrotto / protetto
@@ -772,6 +839,7 @@ def analyze_route():
     if keep_map:
         out["source_text"] = text
     out["pages_no_text"] = no_text
+    out["pages_ocr"] = ocr_done
     return jsonify(out)
 
 
@@ -790,6 +858,11 @@ def _pdf_response(data, report, redactions, filename="documento_anonimizzato.pdf
     resp.headers["X-PII-Notfound"] = str(len(report.get("not_found", [])))
     # pagine scansionate (immagini senza testo): restano come sono, PII comprese
     resp.headers["X-PII-NoText-Pages"] = ",".join(map(str, report.get("no_text_pages", [])))
+    # pagine scansionate lette con l'OCR e coperte coi suoi riquadri; quelle la cui
+    # copertura non si e' potuta rileggere vanno segnalate come i residui
+    resp.headers["X-PII-OCR-Pages"] = ",".join(map(str, report.get("ocr_pages", [])))
+    resp.headers["X-PII-OCR-Unverified"] = ",".join(
+        map(str, report.get("ocr_unverified", [])))
     return resp
 
 
@@ -856,15 +929,19 @@ def _build_anonymized_pdf():
                         "anonimizzare in questo documento.", 422)
 
     if data and _is_pdf(name, data):
+        ocr_res = _ocr_for(data)
         try:
-            out, report = pdf_export.redact_pdf(data, res["mapping"])
+            out, report = pdf_export.redact_pdf(
+                data, res["mapping"], ocr_pages=ocr_res.pages,
+                ocr_verify=_ocr_reread if ocr_res.pages else None)
         except pdf_export.PdfError as e:
             raise _ReqError(str(e))
-        report["no_text_pages"] = _no_text_pages(name, data)
+        report["no_text_pages"] = ocr_res.warn_pages()
         if report["occurrences"] == 0:
             raise _ReqError("Nessuna occorrenza trovata nel PDF: se il documento "
-                            "e' una scansione (testo dentro un'immagine) la "
-                            "redazione del layer testuale non puo' agire.", 422)
+                            "e' una scansione (testo dentro un'immagine) e l'OCR "
+                            "non e' disponibile (c'e' solo nell'app per macOS), "
+                            "la redazione del layer testuale non puo' agire.", 422)
         return out, report, report["occurrences"], out_name
 
     try:
@@ -908,6 +985,8 @@ def pdf_preview_route():
         "skipped": len(report.get("skipped", [])),
         "not_found": len(report.get("not_found", [])),
         "pages_no_text": report.get("no_text_pages", []),
+        "pages_ocr": report.get("ocr_pages", []),
+        "ocr_unverified": report.get("ocr_unverified", []),
     })
 
 
@@ -934,7 +1013,8 @@ def preview_route():
         return jsonify({"error": f"Impossibile leggere il file: {e}"}), 400
     return jsonify({"doc_id": doc_id, "n_pages": n_pages,
                     "filename": _safe_name(name), "text": text,
-                    "pages_no_text": _no_text_pages(name, data)})
+                    "pages_no_text": _no_text_pages(name, data),
+                    "pages_ocr": _ocr_page_numbers(name, data)})
 
 
 @app.route("/doc/<doc_id>/page/<int:n>.png")
