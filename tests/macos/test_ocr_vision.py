@@ -116,8 +116,11 @@ class VisionVero(unittest.TestCase):
         print("\n--- PDF in uscita riletto da Vision ---\n" + letto)
         self.assertNotIn(IBAN, _compatto(letto))
         self.assertNotIn(EMAIL, _compatto(letto))
+        # le parole attorno alle caselle intere; maiuscola/minuscola no: dopo
+        # una casella Vision puo' prendere "intestato" per un inizio di frase
         for parola in ("conto", "IBAN", "intestato", "scrivere", "a", "entro"):
-            self.assertRegex(letto, r"(?<!\w)%s(?!\w)" % re.escape(parola))
+            self.assertRegex(letto, re.compile(r"(?<!\w)%s(?!\w)" % re.escape(parola),
+                                               re.IGNORECASE))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
