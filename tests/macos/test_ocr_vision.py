@@ -25,7 +25,8 @@ import pymupdf as fitz  # noqa: E402
 
 import ocr  # noqa: E402
 import pdf_export  # noqa: E402
-from test_ocr import EMAIL, IBAN, SPOSTATO, _pixel_neri, scansione  # noqa: E402
+from test_ocr import (EMAIL, IBAN, SPOSTATO, _pixel_neri, rect_non_ruotato,  # noqa: E402
+                      scansione, scansione_ruotata)
 from test_ora import APP, client  # noqa: E402
 
 ENGINE = ocr.default_engine()
@@ -77,19 +78,19 @@ class VisionVero(unittest.TestCase):
         self.assertIn("[IBAN_1]", txt)
 
     def test_pagina_ruotata(self):
-        """Scansione su una pagina ruotata di 90 gradi: i riquadri di Vision
-        (immagine come si vede) devono tornare nelle coordinate non ruotate."""
-        data, truth = scansione()
+        """Scansione con /Rotate 90 e immagine salvata di traverso: a video (e a
+        Vision) l'atto si vede dritto, i riquadri devono tornare nelle
+        coordinate non ruotate e coprire l'IBAN vero."""
+        data, truth = scansione_ruotata()
         with fitz.open(stream=data, filetype="pdf") as d:
-            d[0].set_rotation(90)
-            ruotato = d.tobytes()
-        with fitz.open(stream=ruotato, filetype="pdf") as d:
             res = ocr.analyze_doc(d, ENGINE)
-        out, rep = pdf_export.redact_pdf(ruotato, {"[IBAN_1]": IBAN},
+        self.assertIn(IBAN, _compatto(res.pages[0].text))
+        out, rep = pdf_export.redact_pdf(data, {"[IBAN_1]": IBAN},
                                          ocr_pages=res.pages)
         self.assertEqual(1, rep["occurrences"])
-        self.assertEqual(0, _pixel_neri(out, _rect(truth, IBAN)))
-
+        iban = rect_non_ruotato(data, _rect(truth, IBAN))
+        self.assertGreater(_pixel_neri(data, iban), 0)
+        self.assertEqual(0, _pixel_neri(out, iban))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

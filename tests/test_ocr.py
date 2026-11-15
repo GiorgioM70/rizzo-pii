@@ -292,6 +292,30 @@ def scansione(strato=None):
     return data, truth
 
 
+def scansione_ruotata():
+    """Come capita davvero: l'immagine e' salvata di traverso e la pagina ha
+    /Rotate 90, cosi' a video (e a Vision) l'atto si vede DRITTO. La verita'
+    resta quella della pagina come si vede."""
+    data, truth = scansione()
+    with fitz.open(stream=data, filetype="pdf") as d:
+        pix = d[0].get_pixmap(dpi=150)
+        w, h = d[0].rect.width, d[0].rect.height
+    out = fitz.open()
+    p = out.new_page(width=h, height=w)
+    p.set_rotation(90)
+    # rect nelle coordinate NON ruotate: cosi' l'immagine riempie la pagina
+    p.insert_image(p.rect * p.derotation_matrix, pixmap=pix, rotate=90)
+    data = out.tobytes()
+    out.close()
+    return data, truth
+
+
+def rect_non_ruotato(pdf_bytes, rect_visto):
+    """Riquadro della pagina come si vede -> coordinate non ruotate."""
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as d:
+        return fitz.Rect(rect_visto) * d[0].derotation_matrix
+
+
 class OcrFinto:
     """Legge una parola se il suo riquadro contiene ancora pixel neri."""
 
@@ -430,6 +454,28 @@ class RedazioneScansione(unittest.TestCase):
         self.assertEqual([], rep["residual"])
         self.assertEqual(0, _pixel_neri(out, self._rect_parola(IBAN)))
         self.assertGreater(_pixel_neri(out, self._rect_parola("TRIBUNALE")), 0)
+
+    def test_scansione_ruotata_dritta(self):
+        """Il caso reale: /Rotate 90 con l'immagine salvata di traverso, l'atto
+        si vede dritto. Le redazioni devono finire sopra la parola giusta."""
+        data, truth = scansione_ruotata()
+        with fitz.open(stream=data, filetype="pdf") as d:
+            self.assertEqual(90, d[0].rotation)
+            res = ocr.analyze_doc(d, OcrFinto(truth))
+        self.assertIn(IBAN, res.pages[0].text)
+
+        def rileggi(out, idx):
+            with fitz.open(stream=out, filetype="pdf") as d:
+                return ocr.ocr_pages(d, idx, OcrFinto(truth))[0]
+        out, rep = pdf_export.redact_pdf(data, {"[IBAN_1]": IBAN},
+                                         ocr_pages=res.pages, ocr_verify=rileggi)
+        self.assertEqual(1, rep["occurrences"])
+        self.assertEqual([], rep["residual"])
+        iban = rect_non_ruotato(data, self._rect_parola(IBAN))
+        tribunale = rect_non_ruotato(data, self._rect_parola("TRIBUNALE"))
+        self.assertGreater(_pixel_neri(data, iban), 0)
+        self.assertEqual(0, _pixel_neri(out, iban))
+        self.assertGreater(_pixel_neri(out, tribunale), 0)
 
     def test_senza_verifica_si_dice(self):
         out, rep = pdf_export.redact_pdf(self.data, {"[IBAN_1]": IBAN},
