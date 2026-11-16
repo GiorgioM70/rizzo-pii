@@ -49,7 +49,9 @@ Installer **per-utente** (niente admin), in italiano, con shortcut e disinstalla
 
 ### Sviluppo / debug
 - `npx tauri dev` avvia l'app collegata ai sorgenti (ricompila Rust al volo).
-- Log del backend: `%LOCALAPPDATA%\rizzo-pii\backend.log` (il sidecar è windowed, niente console).
+- Log del backend: `backend.log` nella cartella dati dell'app, accanto a `config.json` e `tauri.log`:
+  `%LOCALAPPDATA%\rizzo-pii\` su Windows, `~/Library/Application Support/rizzo-pii/` su macOS,
+  `~/.local/share/rizzo-pii/` su Linux (il sidecar è windowed, niente console).
 - Per rigenerare con un **nuovo modello**: riaddestra (crea `models\rizzo-pii-0.3B-v{VERSION}\`),
   aggiorna il path in **`build_sidecar.spec`** (riga `datas += [("models/rizzo-pii-0.3B-v...", "pii_model")]`),
   poi rifai il passo 1 e il passo 2. Build attuale: **v1.5.0**.
@@ -151,7 +153,7 @@ al posto di `nsis` — la conf Tauri resta su NSIS per Windows e qui si sovrascr
 
 ```bash
 # prerequisiti (una volta)
-xcode-select --install                 # Command Line Tools
+xcode-select --install                 # Command Line Tools (anche swiftc, per l'OCR)
 # + Rust (https://rustup.rs) e Node.js 18+
 
 bash build_macos.sh                    # .app + .dmg
@@ -163,10 +165,22 @@ Output: `tauri/src-tauri/target/release/bundle/macos/Rizzo PII.app` e `.../dmg/*
 Note specifiche di macOS:
 - **Niente indice PyTorch CPU**: su macOS la ruota di default è già CPU/MPS, quindi lo script
   installa `torch` senza `--index-url` (a differenza di Windows/Linux).
-- **Firma**: il bundle **non è firmato né notarizzato**. In locale si apre senza problemi (un file
-  che non arriva da internet non ha l'attributo di quarantena). Copiandolo su un altro Mac serve
-  "tasto destro → Apri", oppure `xattr -dr com.apple.quarantine "Rizzo PII.app"`. Per distribuirlo
-  davvero servono un Developer ID e la notarizzazione Apple.
+- **OCR delle scansioni**: lo script compila `src/app/ocr_macos/main.swift` (framework Vision,
+  di sistema) in `build/ocr/rizzo-ocr` e il spec lo include nel sidecar. Nessuna dipendenza Python
+  in più: una `.venv` già esistente va bene così. Senza `swiftc` la build si ferma.
+- **Firma**: se nel portachiavi c'è una "Developer ID Application" lo script firma con hardened
+  runtime e timestamp **ogni binario del backend** (librerie di torch, estensioni Python, OCR):
+  Tauri firma l'eseguibile principale ma non i file dentro Resources, e la notarizzazione li
+  rifiuterebbe. Lo fa `scripts/firma_backend_macos.sh`, che prima scioglie i **link simbolici** di
+  PyInstaller: Tauri copia le risorse seguendo i link e `_internal/Python` (link alla libreria
+  dentro `Python.framework`) diventava una copia con la firma rotta ("invalid Info.plist") e il
+  backend non partiva. Ora `_internal/Python` diventa un file vero e `Python.framework` si toglie
+  (copiato da Tauri sarebbe un pacchetto "ambiguo" per codesign), solo se nessun binario lo
+  richiama per percorso: altrimenti lo script si ferma e lo dice. A fine build lo script ricontrolla le firme dentro l'app finita; il
+  workflow `firma-macos` prova tutto con un backend piccolo. Poi firma anche il `.dmg`. Notarizzazione: `xcrun notarytool submit <dmg>
+  --keychain-profile <profilo> --wait` e poi `xcrun stapler staple <dmg>`. Senza Developer ID la
+  build resta ad-hoc: in locale si apre, su un altro Mac serve "tasto destro → Apri", oppure
+  `xattr -dr com.apple.quarantine "Rizzo PII.app"`.
 - **Architettura**: il `.app` esce per l'arch della macchina che compila (arm64 su Apple Silicon).
   Per un binario universale servirebbero due build di PyInstaller + `lipo`.
 - **Porta 5005**: se stai già facendo girare `python src/app/app.py` in sviluppo, fermalo prima di
@@ -190,8 +204,8 @@ Note specifiche di macOS:
 ```powershell
 python -m venv build_env
 build_env\Scripts\python.exe -m pip install --upgrade pip
-build_env\Scripts\python.exe -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-build_env\Scripts\python.exe -m pip install "transformers==4.57.3" tokenizers safetensors flask pymupdf pyinstaller
+build_env\Scripts\python.exe -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.13.0"
+build_env\Scripts\python.exe -m pip install "transformers==4.57.3" "tokenizers==0.22.2" "safetensors==0.8.0" "flask==3.1.3" "pymupdf==1.28.2" "huggingface_hub==0.36.2" "pyinstaller==6.22.3"
 ```
 
 ### 2. Build dell'eseguibile

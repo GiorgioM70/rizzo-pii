@@ -15,16 +15,25 @@ Nei PDF fillable (AcroForm) il valore sta nel widget, non nel content stream:
 REDACT_ANNOT = 12
 
 
-def collect_readable_text(doc, redact_annot_type=REDACT_ANNOT):
+def collect_readable_text(doc, redact_annot_type=REDACT_ANNOT, page_texts=None):
     """TUTTO il testo leggibile: pagine + annotazioni + campi modulo + segnalibri.
 
     `doc` e' un iterabile di pagine con `get_text()`, `annots()`, `widgets()`
     e (sul documento) `get_toc(simple=True)`: il contratto di PyMuPDF, senza
-    importarlo. NB: non vede il testo dentro immagini raster.
+    importarlo. Da solo non vede il testo dentro le immagini raster.
+
+    `page_texts` ({indice da 0: testo}) sostituisce il testo di pagina con quello
+    letto dall'OCR (ocr.py): sulle pagine scansionate il layer dello scanner e'
+    vuoto, invisibile o con caratteri senza senso, e l'analisi deve lavorare su
+    cio' che si vede.
     """
     parts = []
-    for page in doc:
-        parts.append(page.get_text() or "")
+    page_texts = page_texts or {}
+    for i, page in enumerate(doc):
+        if i in page_texts:
+            parts.append(page_texts[i] or "")
+        else:
+            parts.append(page.get_text() or "")
         try:
             for a in page.annots() or ():
                 if a.type[0] == redact_annot_type:
@@ -45,3 +54,32 @@ def collect_readable_text(doc, redact_annot_type=REDACT_ANNOT):
     except Exception:
         pass
     return "\n".join(parts)
+
+
+# Sotto questa soglia (spazi esclusi) il layer testuale di una pagina e' "quasi
+# vuoto". Valore ripreso dalla PR upstream #105 (OCR_MIN_CHARS), che con questa
+# stessa soglia decideva quali pagine mandare all'OCR.
+MIN_TEXT_CHARS = 40
+
+
+def pages_without_text(doc, min_chars=MIN_TEXT_CHARS):
+    """Numeri di pagina (da 1) che hanno IMMAGINI ma quasi nessun testo estraibile:
+    tipicamente pagine scansionate dentro un PDF misto. L'anonimizzazione lavora sul
+    layer testuale, quindi le PII dentro quelle immagini restano visibili anche nel
+    PDF redatto: l'UI lo deve dire. Una pagina bianca (niente testo, niente
+    immagini) non conta: non c'e' niente da nascondere."""
+    out = []
+    for i, page in enumerate(doc, start=1):
+        try:
+            txt = page.get_text() or ""
+        except Exception:
+            txt = ""
+        if sum(1 for c in txt if not c.isspace()) >= min_chars:
+            continue
+        try:
+            has_images = bool(page.get_images(full=False))
+        except Exception:
+            has_images = False
+        if has_images:
+            out.append(i)
+    return out

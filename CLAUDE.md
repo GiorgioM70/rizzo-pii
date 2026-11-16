@@ -77,7 +77,7 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   codice di uscita `EXIT_PORT_CONFLICT = 76`: i 3 entry point escono con 76 se la porta è occupata
   **prima di caricare il modello** (evita secondi sprecati). Tauri riconosce il codice 76 e mostra
   il form di configurazione nello splash screen.
-- `app.py` — server Flask + **UI**: testo, PDF o file `.md`/`.txt`, chunking con overlap, offset
+- `app.py` — server Flask + **UI** (HTML/CSS/JS in `static/`: `index.html`, `app.css`, `app.js`; modello caricato **pigro** con `load_model()`, chiamato dagli entry point prima di `app.run()`, sotto gunicorn con `PII_PRELOAD_MODEL=1`): testo, PDF o file `.md`/`.txt`, chunking con overlap, offset
   globali + dedup. Anonimizzazione **reversibile** (ogni PII → `[FULLNAME_1]`/`[IBAN_1]`… +
   dizionario locale; tab "Ripristina"). Affianca al modello una **rete regex/checksum** (EMAIL/
   TELEFONO/IBAN/CF/PIVA/carta/importo/targa/**URL**; IBAN/CF/PIVA/carta validati con checksum, che ha
@@ -87,6 +87,21 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   `POST /analyze`, `POST /pdf`, `POST /preview`, `POST /pdf/preview`, `GET /doc/<id>/page/<n>.png`,
   `GET /doc/<id>/file.pdf`, `GET/POST /settings` (alias storico `/tags`), `GET/POST /config`,
   `GET /port-check`; CLI `--host`/`--port`/`--exclude-tags`/`--no-mapping`.
+- **Offline sempre**: `app.py` fa `os.environ.setdefault` di `HF_HUB_OFFLINE=1` e
+  `TRANSFORMERS_OFFLINE=1` prima di importare transformers (come il Docker; `HF_HUB_OFFLINE=0` per
+  riattivare la rete).
+- **Protezione del server locale** (`local_guard.py`, issue upstream #112): `Host`/`Origin` non di
+  loopback (o dell'host di bind, o in `PII_ALLOWED_HOSTS`) → 403 (DNS rebinding, CSRF). Token di
+  sessione per processo (`PII_API_TOKEN` per fissarlo) iniettato nella pagina (`<meta name="pii-token">`):
+  la UI lo manda in `X-PII-Token`, `<img>`/download di `/doc/...` in `?t=`. Liberi dal token solo `/`,
+  `/static/*`, `/assets/*`, `/health`, `GET /config` (sonda di Tauri). `POST /config` con host non di
+  loopback richiede `confirm_expose: true` (409 altrimenti); `/port-check` solo su indirizzi locali.
+  `PII_REQUIRE_TOKEN=0` spegne solo il token. I test usano `client()` di `tests/test_ora.py`.
+- **Numerazione dei segnaposto per sessione**: campo `session_id` in `/analyze`, `/pdf`,
+  `/pdf/preview` → la numerazione continua tra le analisi (`[IBAN_2]` per un IBAN nuovo, `[IBAN_1]` per
+  uno gia' visto) e il PDF ha gli stessi segnaposto del testo. Stato in memoria (LRU `MAX_SESSIONS`),
+  chiavi HMAC senza valori in chiaro; `POST /session/reset`. Senza `session_id`: comportamento storico.
+  La UI genera l'id (sessionStorage), accumula `MAP` e lo rinnova con "Pulisci".
 - **Anteprima del PDF a video, prima e dopo** — le due colonne mostrano il documento *renderizzato*,
   non solo il testo. A sinistra, appena si carica un PDF: `POST /preview` lo tiene in memoria e
   ritorna testo + numero di pagine, e la card offre due viste (**Anteprima PDF** default, **Testo**).
@@ -101,6 +116,42 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   `{doc_id, n_pages, residual, skipped}`: l'anteprima a destra e il bottone "Scarica PDF" usano
   **la stessa copia**, quindi guardare il PDF e poi scaricarlo costa **una sola** anonimizzazione
   (il download passa da `/doc/<id>/file.pdf`). `/pdf` resta invariato per chi usa l'API.
+- **Pagine scansionate → OCR (solo macOS)** — `ocr.py` (niente fitz/torch: testabile con finti).
+  `plan_pages()` sceglie le pagine da leggere: **vuota** (immagini e < 40 caratteri, soglia della PR
+  upstream #105), **illeggibile** (testo che non passa il controllo di qualità: > 10% di glifi senza
+  mappa Unicode, < 55% di lettere/cifre, oppure da 20 parole latine in su < 28% di vocali, < 3% di
+  parole comuni o > 35% di parole impossibili — soglie e misure commentate in testa al modulo),
+  **invisibile** (immagini e ≥ 50% di caratteri in render mode 3 = l'OCR dello scanner sotto
+  l'immagine). Il caso tipico dell'atto scansionato: layer dello scanner con caratteri senza senso,
+  che prima superava la soglia dei 40 caratteri e passava per testo, senza avviso.
+  Motore: **`rizzo-ocr`**, eseguibile Swift col framework **Vision** (`src/app/ocr_macos/main.swift`,
+  livello accurato, it-IT + en-US): PNG della pagina (PyMuPDF, 300 dpi) sullo stdin → JSON con righe,
+  parole e riquadri normalizzati (origine in alto a sinistra). Un processo per pagina, 4 in parallelo.
+  Scelto al posto di pyobjc: nessuna dipendenza Python, niente hook PyInstaller con decine di `.so` da
+  firmare, confine PNG/JSON facile da sostituire nei test. `build_macos.sh` lo compila con `swiftc` in
+  `build/ocr/`, `build_sidecar.spec` lo mette in `_internal/ocr/` (su macOS è obbligatorio: senza, la
+  build si ferma). `ocr.helper_path()` lo cerca in `PII_OCR_HELPER`, nel bundle, in `build/ocr/`.
+  `PII_OCR=0` lo spegne. Su Windows/Linux non c'è: nessun errore, solo l'avviso.
+  In `app.py` il risultato sta in una **LRU in memoria** per hash del PDF (`_OCR_CACHE`): `/preview`,
+  `/analyze`, `/pdf` sullo stesso file fanno l'OCR una volta. L'analisi usa il testo letto
+  (`pdf_text.collect_readable_text(page_texts=...)`). In `pdf_export.redact_pdf(ocr_pages=,
+  ocr_verify=)` sulle pagine OCR: (0) via il **testo invisibile** dello scanner (anche "rovinato" può
+  tenere le cifre di un IBAN), (0b) se resta testo **visibile** illeggibile la pagina diventa
+  un'**immagine** a 300 dpi (`_flatten_to_image`, report `flattened`): in quei font (es. Type 3
+  dell'atto, ogni carattere largo quanto il corpo) `apply_redactions()` toglierebbe anche le lettere
+  accanto alla casella ("numero" → "nume"), sull'immagine sbianca solo i pixel dentro,
+  (1) redazione normale del layer, (2) redazione sui **riquadri delle
+  parole** dell'OCR con margine (`OCR_PAD`), ma i bordi verso le parole vicine si **allineano all'inchiostro** del dato
+  (`_Ink.snap`, render in grigi a 300 dpi): i riquadri di Vision sono larghi e la casella copriva
+  l'ultima lettera prima ("Signor" -> "Signo"); anche il bordo da 1 pt che `apply_redactions()`
+  disegna attorno alla casella e' compensato (`REDACT_STROKE_HALF`), `apply_redactions()` sbianca i pixel dell'immagine sotto,
+  (3) **rilettura con l'OCR** del PDF in uscita: valore ancora leggibile → `residual`; pagina non
+  riletta → `ocr_unverified` (avviso nell'UI).
+  Risposte: `pages_ocr` (pagine lette), `pages_no_text` (pagine senza testo leggibile **non** lette:
+  le PII restano), `ocr_unverified`; header `X-PII-OCR-Pages`, `X-PII-OCR-Unverified`,
+  `X-PII-NoText-Pages`. `/health` ha `"ocr": true/false`. Test: `tests/test_ocr.py` (motore finto
+  che legge i pixel veri, pagine ruotate comprese) e `tests/macos/test_ocr_vision.py` (Vision vero,
+  fuori dalla discovery, lo lancia il workflow `ocr-macos`).
 - **Preferenze di anonimizzazione** → `prefs.json` nella config dir (`EXCLUDED_TAGS`,
   `MAPPING_ENABLED`). File **separato da `config.json`** perché Tauri riscrive quest'ultimo per
   intero quando si cambia porta dallo splash. Precedenza: campo nella richiesta > CLI > env > file.
@@ -112,7 +163,7 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   `include_mapping`): con off l'anonimizzazione è **definitiva**. Non è cosmetico — `analyze()` non
   costruisce la mappa, la risposta non ha `mapping`, e i segmenti-entità **perdono il campo `t`**
   (altrimenti il dizionario si ricostruirebbe dal payload); l'UI non scrive `pii_map` in
-  localStorage e nasconde il download. La **numerazione resta** (`[FULLNAME_1]` due volte = stesso
+  sessionStorage (dove ora vive il dizionario: muore con la finestra) e nasconde il download. La **numerazione resta** (`[FULLNAME_1]` due volte = stesso
   soggetto): è utile all'LLM e da sola non riporta al valore. UI: switch nella card di input, ambra
   quando è off. `source_text` continua a tornare — è il documento che hai appena mandato tu, non una
   chiave di ripristino.
@@ -140,10 +191,11 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   `X-PII-Residual` e `X-PII-Skipped`): (a) *residui* = valore ancora leggibile nell'output alla
   verifica finale; (b) *saltati* = valori con < 2 caratteri alfanumerici o di 2 sole cifre (es. "45"),
   non cercabili senza devastare il documento. Se in tutto il PDF non si trova **nessuna** occorrenza
-  → `422`, non un PDF "anonimizzato" che non lo è (caso tipico: scansione, serve OCR → punti 2-4
-  della issue). Nessuna dipendenza dal modello: `pdf_export.py` è testabile in isolamento.
+  → `422`, non un PDF "anonimizzato" che non lo è (caso tipico: scansione senza OCR, cioè fuori da
+  macOS → punti 2-4 della issue). Nessuna dipendenza dal modello: `pdf_export.py` è testabile in isolamento.
 - `serve.py` — entry **headless** (solo Flask, niente browser): è il backend dell'app Tauri; log su
-  `%LOCALAPPDATA%\rizzo-pii\backend.log`. Pre-check porta + `sys.exit(76)` se occupata.
+  `backend.log` nella **cartella dati** di `server_config.config_dir()` (la stessa di `config.json`,
+  mai nella home; anche `tauri.log` di lib.rs). Pre-check porta + `sys.exit(76)` se occupata.
   `desktop_app.py` — entry PyInstaller legacy (apre il browser); stesso pre-check.
   `assets/` — mascotte (il riccio) + icone. `smoke_app.py`, `make_test_pdf.py`.
 

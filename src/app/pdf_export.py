@@ -36,9 +36,16 @@ Rete di sicurezza finale: `report["residual"]` elenca i placeholder il cui valor
 e' ANCORA leggibile nell'output (testo di pagina + annotazioni + widget + TOC).
 Deve essere vuota; l'UI avvisa se non lo e'.
 
+Pagine scansionate (`ocr_pages`, solo macOS, vedi ocr.py): i valori si cercano
+anche nel testo letto dall'OCR e si coprono i riquadri delle parole; i pixel
+dell'immagine sotto vengono sbiancati da apply_redactions(). Se la pagina ha
+ancora testo VISIBILE (illeggibile, per questo e' andata all'OCR) prima diventa
+un'immagine: vedi _flatten_to_image. Poi le pagine si RILEGGONO con l'OCR
+(`ocr_verify`): un valore ancora leggibile e' un residuo.
+
 Limiti noti (= punti 2-4 della issue #7):
-  - testo dentro immagini raster (scansioni, loghi, blocchi firma): non esiste nel
-    layer testuale, quindi non puo' essere trovato ne' redatto (serve OCR). Se in
+  - testo dentro immagini raster SENZA OCR (Windows/Linux, o OCR fallito): non
+    esiste nel layer testuale, quindi non puo' essere trovato ne' redatto. Se in
     tutto il PDF non si trova NESSUNA occorrenza, il chiamante deve rifiutare:
     meglio un errore che un PDF "anonimizzato" che non lo e';
   - valori troppo corti/ambigui (< 2 caratteri alfanumerici, o 2 sole cifre) NON
@@ -49,7 +56,7 @@ Limiti noti (= punti 2-4 della issue #7):
 import re
 import unicodedata
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF (il nome "fitz" e' deprecato)
 import pdf_text
 
 
@@ -83,7 +90,10 @@ def _fit_fontsize(text, rect, max_fs=10.0, min_fs=4.0):
         return 0
     if w10 <= 0:
         return 0
-    fs = min(max_fs, rect.height * 0.82, 10.0 * max(rect.width - 2.0, 0.0) / w10)
+    # la casella colorata col segnaposto sta dentro `rect` di REDACT_STROKE_HALF
+    h = 2 * REDACT_STROKE_HALF
+    fs = min(max_fs, max(rect.height - h, 0.0) * 0.82,
+             10.0 * max(rect.width - h - 2.0, 0.0) / w10)
     return round(fs, 1) if fs >= min_fs else 0
 
 
@@ -338,6 +348,26 @@ def _verify_residuals(pdf_bytes, items):
     return residual
 
 
+def _verify_ocr(out_bytes, items, indices, ocr_verify):
+    """Rilegge con l'OCR le pagine scansionate del PDF IN USCITA: un valore che
+    l'OCR legge ancora e' un residuo, esattamente come nel testo. Ritorna
+    (placeholder residui, pagine da 1 non rilette)."""
+    if ocr_verify is None:
+        return [], [i + 1 for i in indices]
+    try:
+        again = ocr_verify(out_bytes, indices) or {}
+    except Exception:
+        again = {}
+    unverified = [i + 1 for i in indices if i not in again]
+    text = "\n".join(again[i].text for i in indices if i in again)
+    residual = []
+    for ph, val in items:
+        pat = _value_pattern(val)
+        if pat and pat.search(text):
+            residual.append(ph)
+    return residual, unverified
+
+
 # --------------------------------------------------------------------------- #
 # API pubblica
 # --------------------------------------------------------------------------- #
@@ -349,10 +379,192 @@ REDACT_FILL = (0.486, 0.227, 0.620)
 REDACT_TEXT = (1.0, 1.0, 1.0)
 
 
-def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT):
+def _ocr_char_index(ocr_page):
+    """Indice char-preciso di una pagina letta con l'OCR (ocr.OcrPage): stesso
+    formato di _page_char_index, riquadri delle parole al posto dei glifi."""
+    text, boxes = ocr_page.char_index()
+    return text, [fitz.Rect(b) if b is not None else None for b in boxes]
+
+
+# Margine attorno ai riquadri dell'OCR, in frazione dell'altezza della riga: i
+# riquadri di Vision stanno stretti sui glifi, e un pixel di asta o di grazia
+# rimasto fuori basta a rileggere una cifra.
+OCR_PAD = 0.25
+
+
+def _pad(rect, k=OCR_PAD):
+    dy = max(1.0, rect.height * k)
+    dx = max(1.0, rect.height * k * 0.6)
+    return fitz.Rect(rect.x0 - dx, rect.y0 - dy, rect.x1 + dx, rect.y1 + dy)
+
+
+# Bordi delle caselle sulle pagine OCR allineati all'INCHIOSTRO vero: i riquadri
+# di Vision sono larghi e il margine OCR_PAD li allarga ancora, quindi la casella
+# finiva sopra l'ultima lettera della parola prima ("Signor" -> "Signo").
+# La pagina si renderizza in grigi una volta; per ogni casella si cercano le
+# colonne con inchiostro sulla riga: il dato sono i tratti col centro dentro il
+# riquadro di Vision, e la casella parte dal primo tratto del dato e finisce
+# sull'ultimo: tra la parola prima e la casella resta bianco tutto lo
+# spazio-lettera, e lo stesso verso la parola dopo. Verso il bianco libero
+# (inizio o fine riga) il margine resta OCR_PAD.
+INK_DPI = 300
+INK_LEVEL = 140          # grigio (0-255) sotto cui un pixel e' inchiostro
+INK_SAME_WORD = 0.12     # spazio < 12% dell'altezza della riga: stessa parola
+
+
+class _Ink:
+    """Pagina come si vede (rotazione compresa), in grigi, per misurare dove
+    sta l'inchiostro attorno a un riquadro dell'OCR."""
+
+    def __init__(self, page):
+        self.pix = page.get_pixmap(dpi=INK_DPI, colorspace=fitz.csGRAY, annots=False)
+        self.k = INK_DPI / 72.0
+        self.to_vis = page.rotation_matrix
+        self.from_vis = page.derotation_matrix
+
+    def _ink_cols(self, x0, x1, y0, y1):
+        W, H, s = self.pix.width, self.pix.height, self.pix.samples
+        x0, x1 = max(0, x0), min(W, x1)
+        y0, y1 = max(0, y0), min(H, y1)
+        cols = []
+        for x in range(x0, x1):
+            cols.append(any(s[y * W + x] < INK_LEVEL for y in range(y0, y1)))
+        return x0, cols
+
+    def snap(self, rect, k=OCR_PAD):
+        """Riquadro dell'OCR (coordinate non ruotate) -> casella con margine,
+        allineata all'inchiostro del dato e staccata dalle parole vicine."""
+        vis = fitz.Rect(rect) * self.to_vis
+        h = max(vis.height, 1.0)
+        dx, dy = max(1.0, h * k * 0.6), max(1.0, h * k)
+        padded = fitz.Rect(vis.x0 - dx, vis.y0 - dy, vis.x1 + dx, vis.y1 + dy)
+        q = self.k
+        bx0, bx1 = vis.x0 * q, vis.x1 * q
+        start, cols = self._ink_cols(int((vis.x0 - 3 * h) * q), int((vis.x1 + 3 * h) * q) + 1,
+                                     int(vis.y0 * q), int(vis.y1 * q) + 1)
+        runs, i = [], 0
+        while i < len(cols):                       # tratti di inchiostro contigui
+            if cols[i]:
+                j = i
+                while j + 1 < len(cols) and cols[j + 1]:
+                    j += 1
+                runs.append([start + i, start + j + 1])
+                i = j + 1
+            else:
+                i += 1
+        val = [n for n, (a, b) in enumerate(runs) if bx0 <= (a + b) / 2 <= bx1]
+        if not val:
+            return _pad(rect, k)
+        lo, hi = val[0], val[-1]
+        same = INK_SAME_WORD * h * q
+        while lo > 0 and runs[lo][0] - runs[lo - 1][1] < same:          # lettera tagliata
+            lo -= 1
+        while hi + 1 < len(runs) and runs[hi + 1][0] - runs[hi][1] < same:
+            hi += 1
+        vx0, vx1 = runs[lo][0] / q, runs[hi][1] / q
+        # verso una parola vicina la casella si ferma sul bordo dell'inchiostro
+        # del dato: tutto lo spazio-lettera resta bianco. Verso il bianco
+        # libero (inizio o fine riga) resta il margine OCR_PAD.
+        left = vx0 if lo > 0 else vx0 - dx
+        right = vx1 if hi + 1 < len(runs) else vx1 + dx
+        box = fitz.Rect(left, padded.y0, right, padded.y1) * self.from_vis
+        box.normalize()
+        return box
+
+
+# Pagina scansionata col testo dello scanner: se questa quota dei caratteri e'
+# INVISIBILE (render mode 3) il layer e' quello dello scanner e si toglie tutto.
+INVISIBLE_LAYER_MIN = 0.5
+
+
+def _strip_invisible_text(page):
+    """Toglie il testo INVISIBILE di una pagina scansionata (l'OCR dello scanner
+    sotto l'immagine). Sulle pagine lette con il nostro OCR quel layer non serve a
+    niente e puo' tenere le PII in chiaro anche quando e' "rovinato": in un font
+    con le lettere spostate le cifre di un IBAN restano spesso le stesse, e
+    copia-incolla le restituisce. Si tolgono solo i caratteri invisibili (riquadri
+    dal texttrace), immagini e grafica intatte. Ritorna i caratteri tolti."""
+    try:
+        spans = page.get_texttrace()
+    except Exception:
+        return 0
+    tot = sum(len(sp.get("chars") or ()) for sp in spans)
+    inv = [sp for sp in spans if sp.get("type") == 3]
+    n = sum(len(sp.get("chars") or ()) for sp in inv)
+    if not tot or n / tot < INVISIBLE_LAYER_MIN:
+        return 0
+    for sp in inv:
+        r = fitz.Rect(sp["bbox"])
+        if not r.is_empty:
+            page.add_redact_annot(r, fill=False)
+    page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
+                          graphics=fitz.PDF_REDACT_LINE_ART_NONE)
+    return n
+
+
+# Risoluzione dell'immagine che prende il posto di una pagina col testo visibile
+# illeggibile: la stessa con cui la legge l'OCR (ocr.OCR_DPI).
+FLATTEN_DPI = 300
+
+
+def _visible_chars(page):
+    try:
+        spans = page.get_texttrace()
+    except Exception:
+        return 0
+    return sum(len(sp.get("chars") or ()) for sp in spans if sp.get("type") != 3)
+
+
+def _flatten_to_image(page):
+    """Pagina letta con l'OCR che ha ancora testo VISIBILE (illeggibile: font
+    senza mappa Unicode, lettere spostate) -> la stessa pagina come immagine.
+
+    Perche': in quel testo i caratteri hanno spesso riquadri molto piu' larghi
+    del segno vero (nell'atto: font Type 3 con ogni carattere largo quanto il
+    corpo, ~10 pt, e le lettere avvicinate a ~3 pt con la crenatura).
+    apply_redactions() toglie OGNI carattere il cui riquadro tocca la casella,
+    quindi la casella sopra un dato si portava via anche 2-3 lettere prima e
+    dopo ("numero" -> "nume", "Fiscale" -> "Fisca"). Su un'immagine invece si
+    sbiancano solo i pixel dentro la casella. In piu' il testo illeggibile esce
+    dal file: non tiene piu' in chiaro nemmeno le cifre di un IBAN.
+
+    Si renderizza senza annotazioni (ripulite a parte), si svuotano contenuto e
+    risorse della pagina e si mette l'immagine. Ritorna la pagina ricaricata, o
+    None se non c'era testo visibile."""
+    if not _visible_chars(page):
+        return None
+    doc, rot = page.parent, page.rotation
+    if rot:
+        page.set_rotation(0)        # immagine e redazioni nelle coordinate non ruotate
+    pix = page.get_pixmap(dpi=FLATTEN_DPI, annots=False)
+    xref = doc.get_new_xref()
+    doc.update_object(xref, "<<>>")
+    doc.update_stream(xref, b"")
+    doc.xref_set_key(page.xref, "Contents", f"{xref} 0 R")
+    doc.xref_set_key(page.xref, "Resources", "<<>>")
+    page = doc.reload_page(page)
+    page.insert_image(page.rect, pixmap=pix)
+    if rot:
+        page.set_rotation(rot)
+    return page
+
+
+def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
+               ocr_pages=None, ocr_verify=None):
     """PDF originale -> PDF con redazione vera + placeholder al posto delle PII.
 
     mapping: {"[FULLNAME_1]": "Mario Rossi", ...} (il dizionario di analyze()).
+
+    ocr_pages: {indice di pagina da 0: ocr.OcrPage} per le pagine SCANSIONATE.
+        Oltre al layer testuale si cercano i valori nel testo letto dall'OCR e si
+        copre il riquadro delle parole: apply_redactions() sbianca i pixel
+        dell'immagine sotto (images=PDF_REDACT_IMAGE_PIXELS, il default) e la
+        casella viola ci va sopra. Senza questo, nel PDF in uscita la scansione
+        resterebbe com'era.
+    ocr_verify: funzione (pdf_bytes_in_uscita, [indici]) -> {indice: OcrPage}
+        che RILEGGE con l'OCR le pagine redatte. Un valore ancora leggibile finisce
+        in "residual" come per il testo; una pagina che non si riesce a rileggere
+        finisce in "ocr_unverified" (l'UI avvisa: copertura non verificata).
     Ritorna (bytes, report) con report = {
         "occurrences":    occorrenze redatte nel testo di pagina,
         "by_placeholder": {placeholder: n_occorrenze},
@@ -360,6 +572,11 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT):
         "skipped":        placeholder NON cercati perche' troppo corti/ambigui
                           (restano in chiaro: va segnalato all'utente),
         "residual":       placeholder ancora leggibili nell'output (deve essere []),
+        "ocr_pages":      pagine (da 1) redatte con i riquadri dell'OCR,
+        "ocr_unverified": pagine (da 1) OCR la cui copertura non e' stata riletta,
+        "invisible_chars": caratteri del testo invisibile dello scanner tolti,
+        "flattened":      pagine (da 1) OCR col testo visibile illeggibile,
+                          trasformate in immagine prima di coprire,
         "annots":         sostituzioni nelle annotazioni,
         "widgets":        sostituzioni nei campi modulo,
         "toc":            sostituzioni nei segnalibri,
@@ -400,26 +617,61 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT):
     patterns = [(pat, ph) for ph, _, pat in usable]   # per annot/widget/TOC
     total = n_annots = n_widgets = 0
 
-    for page in doc:
-        text, boxes = _page_char_index(page)
+    ocr_pages = {i: p for i, p in (ocr_pages or {}).items()
+                 if 0 <= i < doc.page_count}
+
+    def _redact_text(page, text, boxes, taken, pad, ink=None):
+        n = 0
+        if not text.strip():
+            return 0
+        for ph, val, pat in usable:
+            for m in pat.finditer(text):
+                rects = _match_rects(boxes, m)
+                if pad:
+                    rects = [ink.snap(r) if ink else _pad(r) for r in rects]
+                placed_any, labeled = False, False
+                for r in rects:
+                    if _covered(r, taken):
+                        continue
+                    fs = 0 if labeled else _fit_fontsize(ph, r)
+                    _add_redact_annot(page, r, ph if fs else None,
+                                      fs or 6, fill, text_color)
+                    taken.append(fitz.Rect(r))
+                    placed_any = True
+                    labeled = labeled or bool(fs)
+                if placed_any:
+                    by_ph[ph] += 1
+                    n += 1
+        return n
+
+    n_invisible = 0
+    flattened = []
+    for pno in range(doc.page_count):
+        page = doc[pno]
         taken = []
-        if text.strip():
-            for ph, val, pat in usable:
-                for m in pat.finditer(text):
-                    rects = _match_rects(boxes, m)
-                    placed_any, labeled = False, False
-                    for r in rects:
-                        if _covered(r, taken):
-                            continue
-                        fs = 0 if labeled else _fit_fontsize(ph, r)
-                        _add_redact_annot(page, r, ph if fs else None,
-                                          fs or 6, fill, text_color)
-                        taken.append(fitz.Rect(r))
-                        placed_any = True
-                        labeled = labeled or bool(fs)
-                    if placed_any:
-                        by_ph[ph] += 1
-                        total += 1
+        # 0) pagina scansionata: via il testo invisibile dello scanner, PRIMA di
+        #    disegnare le caselle (dopo, la sua rimozione toglierebbe anche le
+        #    etichette dei segnaposto che ci stanno sopra)
+        if pno in ocr_pages:
+            n_invisible += _strip_invisible_text(page)
+            # 0b) testo VISIBILE illeggibile: la pagina diventa un'immagine,
+            #     cosi' le caselle dell'OCR non si portano via le lettere vicine
+            flat = _flatten_to_image(page)
+            if flat is not None:
+                page = flat
+                flattened.append(pno + 1)
+        # 1) layer testuale (anche sulle scansioni: il testo nascosto dello
+        #    scanner va tolto dove contiene i valori)
+        text, boxes = _page_char_index(page)
+        total += _redact_text(page, text, boxes, taken, pad=False)
+        # 2) testo letto dall'OCR: copre quello che si VEDE nell'immagine
+        if pno in ocr_pages:
+            o_text, o_boxes = _ocr_char_index(ocr_pages[pno])
+            try:
+                ink = _Ink(page)
+            except Exception:
+                ink = None
+            total += _redact_text(page, o_text, o_boxes, taken, pad=True, ink=ink)
         if taken:
             page.apply_redactions()   # rimozione VERA dal content stream
         # dopo le redazioni: annotazioni e campi modulo non sono content stream
@@ -433,12 +685,21 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT):
     doc.close()
 
     checked = [(ph, v) for ph, v in items if ph in by_ph]
+    residual = _verify_residuals(out, checked)
+    unverified = []
+    if ocr_pages:
+        res_ocr, unverified = _verify_ocr(out, checked, sorted(ocr_pages), ocr_verify)
+        residual += [ph for ph in res_ocr if ph not in residual]
     return out, {
         "occurrences": total,
         "by_placeholder": by_ph,
         "not_found": [ph for ph, n in by_ph.items() if n == 0],
         "skipped": skipped,
-        "residual": _verify_residuals(out, checked),
+        "residual": residual,
+        "ocr_pages": [i + 1 for i in sorted(ocr_pages)],
+        "invisible_chars": n_invisible,
+        "flattened": flattened,
+        "ocr_unverified": unverified,
         "annots": n_annots,
         "widgets": n_widgets,
         "toc": n_toc,
@@ -446,15 +707,37 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT):
     }
 
 
+# apply_redactions() colora la casella con riempimento E bordo dello stesso
+# colore, spesso 1 pt: la casella visibile e' mezzo punto piu' larga del
+# rettangolo da redigere su ogni lato. Accanto a una parola quel mezzo punto
+# copriva meta' dell'ultima lettera ("Signor" -> "Signo").
+REDACT_STROKE_HALF = 0.5
+
+
 def _add_redact_annot(page, rect, text, fontsize, fill, text_color):
     """add_redact_annot con cross_out disattivato dove il binding lo supporta
-    (le X diagonali sporcano il placeholder); fallback per le versioni vecchie."""
+    (le X diagonali sporcano il placeholder); fallback per le versioni vecchie.
+
+    La casella colorata deve coincidere col rettangolo: una redazione senza
+    colore su tutto `rect` toglie testo e pixel, una seconda col colore e il
+    segnaposto sta dentro di mezzo punto, cosi' col bordo arriva proprio al
+    bordo di `rect` e non oltre."""
+    rect = fitz.Rect(rect)
+    h = REDACT_STROKE_HALF
+    inner = fitz.Rect(rect.x0 + h, rect.y0 + h, rect.x1 - h, rect.y1 - h)
     kw = dict(text=text, fontname="helv", fontsize=fontsize,
               align=fitz.TEXT_ALIGN_CENTER, fill=fill, text_color=text_color)
-    try:
-        return page.add_redact_annot(rect, cross_out=False, **kw)
-    except TypeError:
-        return page.add_redact_annot(rect, **kw)
+
+    def add(r, **k):
+        try:
+            return page.add_redact_annot(r, cross_out=False, **k)
+        except TypeError:
+            return page.add_redact_annot(r, **k)
+
+    if not fill or inner.width < 1 or inner.height < 1:
+        return add(rect, **kw)
+    add(rect)                       # solo togliere, nessun colore
+    return add(inner, **kw)
 
 
 def text_to_pdf(text, margin=56.0, fontsize=10.5, leading=15.5):

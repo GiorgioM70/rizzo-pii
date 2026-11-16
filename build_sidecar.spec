@@ -16,7 +16,18 @@ for pkg in ("transformers", "tokenizers", "safetensors", "huggingface_hub", "reg
 # modello + asset grafici impacchettati (app.py li risolve via _resource_path / _MEIPASS)
 datas += [("models/rizzo-pii-0.3B-v1.5.0", "pii_model")]
 datas += [("src/app/assets", "assets")]
-hiddenimports += ["fitz", "flask", "sklearn.utils._typedefs"]
+datas += [("src/app/static", "static")]   # UI: index.html + app.css + app.js
+hiddenimports += ["pymupdf", "fitz", "flask", "sklearn.utils._typedefs"]
+
+# OCR delle scansioni (solo macOS): eseguibile Swift col framework Vision, compilato
+# da build_macos.sh in build/ocr/. Finisce in _internal/ocr/rizzo-ocr, dove lo
+# cerca ocr.helper_path(). Su macOS e' obbligatorio: una build che parte senza
+# darebbe un'app che non legge le scansioni senza che nessuno se ne accorga.
+import sys, os
+if sys.platform == "darwin":
+    if not os.path.isfile("build/ocr/rizzo-ocr"):
+        raise SystemExit("ERRORE: build/ocr/rizzo-ocr mancante: lancia la build con build_macos.sh")
+    binaries += [("build/ocr/rizzo-ocr", "ocr")]
 
 excludes = [
     "tensorflow", "tensorflow_intel", "tf_keras", "keras", "jax", "jaxlib", "flax",

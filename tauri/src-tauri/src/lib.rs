@@ -19,11 +19,12 @@ use std::time::Duration;
 use serde_json::json;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-/// Logging diagnostico su file (~/rizzo-pii/tauri.log).
-/// Usa un file nella stessa directory del backend.log.
+/// Logging diagnostico su file (tauri.log), nella cartella dati dell'app accanto a
+/// config.json e backend.log (vedi config_dir). Prima finiva in ~/rizzo-pii, una
+/// cartella visibile nella home dell'utente.
 fn tlog(msg: &str) {
     use std::io::Write;
-    let dir = dirs::home_dir().unwrap_or_default().join("rizzo-pii");
+    let dir = config_dir();
     let _ = fs::create_dir_all(&dir);
     if let Ok(mut f) = fs::OpenOptions::new()
         .create(true).append(true)
@@ -235,12 +236,18 @@ fn poll_backend(
     }
     // timeout raggiunto
     if let Some(splash) = handle.get_webview_window("splash") {
-        let _ = splash.eval(
+        // il percorso vero (config_dir), non quello di Windows scritto a mano: su
+        // macOS e Linux il log e' altrove. serde_json lo rende un letterale JS
+        // sicuro (backslash di Windows, apici nel nome utente).
+        let dir = serde_json::to_string(&config_dir().display().to_string())
+            .unwrap_or_else(|_| "\"\"".to_string());
+        let _ = splash.eval(&format!(
             "var n=document.querySelector('.note');\
-             if(n){n.textContent='Errore: il backend non si è avviato. \
-             Vedi il log in %LOCALAPPDATA%\\\\rizzo-pii\\\\backend.log';}\
-             var b=document.querySelector('.bar');if(b){b.style.display='none';}",
-        );
+             if(n){{n.textContent='Errore: il backend non si è avviato. \
+             Vedi backend.log in '+{};}}\
+             var b=document.querySelector('.bar');if(b){{b.style.display='none';}}",
+            dir
+        ));
     }
     Err("timeout in attesa del backend".to_string())
 }

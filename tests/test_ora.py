@@ -78,6 +78,14 @@ except Exception:                       # noqa: BLE001 - qualunque import mancan
     APP = None
 
 
+def client():
+    """test_client() dell'app con il token di sessione gia' negli header, come fa la
+    UI (vedi local_guard.py): senza, ogni endpoint dell'API risponde 403."""
+    c = APP.app.test_client()
+    c.environ_base["HTTP_X_PII_TOKEN"] = APP.local_guard.API_TOKEN
+    return c
+
+
 class CompletaOra(unittest.TestCase):
     def test_minuti_tagliati(self):
         t = "Ingresso ore 18:28, uscita ore 19:30."

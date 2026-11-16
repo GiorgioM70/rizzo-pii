@@ -32,11 +32,21 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # Nessun pip install: la suite in tests/ gira sulla sola libreria
-      # standard. I generatori di dati (src/data_pipeline/) non hanno
-      # dipendenze e src/app/detectors.py non importa torch/transformers/fitz,
-      # quindi la rete regex+checksum e' verificabile senza il modello.
-      # Installare torch qui costerebbe minuti e gigabyte per zero copertura
-      # in piu': l'inferenza del modello non e' sotto test.
+      # Solo flask e pymupdf: bastano per importare src/app/app.py (torch e
+      # transformers si caricano pigri in load_model(), mai chiamato dai test,
+      # che sostituiscono il modello con un finto). Cosi' girano anche i test
+      # HTTP e PDF, che senza queste due librerie venivano saltati. torch resta
+      # fuori: costerebbe minuti e gigabyte e l'inferenza vera non e' sotto test.
+      # Versioni allineate a requirements.txt.
+      - name: dipendenze dei test (flask, pymupdf)
+        run: python -m pip install "flask==3.1.3" "pymupdf==1.28.2"
+
+      # Nessun test deve risultare saltato: un test che si salta da solo per una
+      # dipendenza mancante e' un test che non protegge piu' niente.
       - name: unittest discover
-        run: python -m unittest discover -v tests
+        run: |
+          python -m unittest discover -v tests 2>&1 | tee unittest.log
+          test "${PIPESTATUS[0]}" -eq 0
+          if grep -q "skipped=" unittest.log; then
+            echo "::error::test saltati: controlla le dipendenze" && exit 1
+          fi

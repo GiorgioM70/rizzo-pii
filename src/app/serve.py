@@ -17,7 +17,10 @@ Configurazione host/porta:
   4) default 127.0.0.1:5005
 
 NB: la 5000 su macOS e' occupata da AirPlay Receiver (ControlCenter) -\u003e pagina bianca.
-Log:   %LOCALAPPDATA%\\\\rizzo-pii\\\\backend.log  (in append; oltre 1 MB ruota su backend.log.1)
+Log:   backend.log nella cartella dati dell'app, la stessa di config.json
+       (server_config.config_dir(): %LOCALAPPDATA%\\rizzo-pii su Windows,
+       ~/Library/Application Support/rizzo-pii su macOS, ~/.local/share/rizzo-pii
+       su Linux). In append; oltre 1 MB ruota su backend.log.1.
 
 Il processo esce con codice 76 (EX_PROTOCOL) se la porta e' occupata: Tauri lo
 riconosce e mostra il form di configurazione nello splash screen.
@@ -32,8 +35,14 @@ import time
 # riapre l'app) cancellava il log dell'avvio fallito, cioe' proprio quello che lo
 # splash chiede di andare a leggere quando il backend non parte. Il lato Rust (tlog)
 # gia' scrive in append. Rotazione a 1 MB su .1 perche' il file non cresca all'infinito.
+# La cartella e' quella di config.json (server_config.config_dir()), non la home:
+# prima su macOS e Linux il log finiva in ~/rizzo-pii, una cartella visibile nella
+# home dell'utente. server_config importa solo la libreria standard e non stampa
+# nulla, quindi si puo' importare prima di redirigere stdout.
+import server_config  # noqa: E402
+
 _LOG_MAX = 1_000_000
-_logdir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "rizzo-pii")
+_logdir = str(server_config.config_dir())
 _logpath = os.path.join(_logdir, "backend.log")
 try:
     os.makedirs(_logdir, exist_ok=True)
@@ -55,8 +64,6 @@ try:
 except Exception:
     pass  # se non si puo' loggare, si prosegue comunque
 
-import server_config  # noqa: E402
-
 HOST, PORT = server_config.resolve()
 
 # --- pre-check porta PRIMA di caricare il modello (che richiede secondi) --- #
@@ -64,8 +71,11 @@ if not server_config.port_available(HOST, PORT):
     print(f"[serve] ERRORE: porta {PORT} occupata su {HOST}")
     sys.exit(server_config.EXIT_PORT_CONFLICT)
 
-# l'import carica il modello (puo' richiedere alcuni secondi)
-from app import app  # noqa: E402
+from app import app, load_model  # noqa: E402
+
+# carica il modello PRIMA di aprire il server (puo' richiedere alcuni secondi):
+# Tauri considera il backend pronto quando la porta risponde.
+load_model()
 
 if __name__ == "__main__":
     print(f"[serve] avvio server su {HOST}:{PORT}")

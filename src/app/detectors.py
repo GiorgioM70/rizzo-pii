@@ -90,6 +90,52 @@ def luhn_ok(s):
 #                       IBAN/PIVA/carta -> servono i numeri giusti per non avere falsi positivi).
 #   strict=False     -> si redige comunque (forma molto specifica, es. CF: meglio nascondere);
 #                       validated=True solo se il checksum passa (mette il ✓).
+_PHONE_SEP = r"[ \t .\-]"
+_PHONE_RX = re.compile(
+    r"(?<![\w.+(])(?:"
+    # internazionale: +39 / 0039 / (+39) / (39), poi il numero (prefisso di zona
+    # facoltativo tra parentesi, gruppi da 1 a 4 cifre)
+    r"(?P<intl>(?:\+|00)\d{1,3}|\(\+?\d{1,3}\))" + _PHONE_SEP + r"?"
+    r"(?P<rest>(?:\(\d{1,4}\)" + _PHONE_SEP + r"?)?\d{1,4}(?:" + _PHONE_SEP + r"?\d{1,4}){1,5})"
+    # nazionale italiano: cellulare 3xx o fisso 0x.. (anche "(011)")
+    r"|(?P<nat>(?:3\d{2}|\(0\d{1,3}\)|0\d{1,3})(?:" + _PHONE_SEP + r"?\d{2,5}){1,4})"
+    r")(?!\w)(?![.\-]\d)")
+
+# una data scritta con punti o trattini ("01.02.2024", "03-04-25") ha la stessa
+# forma di un fisso a gruppi: va esclusa esplicitamente
+_PHONE_DATE = re.compile(r"\(?\d{1,2}\)?[ .\-]\d{1,2}[ .\-]\d{2,4}")
+
+
+def _digits(s):
+    return sum(c.isdigit() for c in s)
+
+
+def _it_national_ok(num):
+    """Numero nazionale italiano: cellulare 3xx di 9-10 cifre, fisso 0x di 6-11."""
+    d = "".join(c for c in num if c.isdigit())
+    if d.startswith("3"):
+        return 9 <= len(d) <= 10
+    if d.startswith("0"):
+        return 6 <= len(d) <= 11
+    return False
+
+
+def _phone_shape_ok(m):
+    """Filtro sul match di _PHONE_RX: conta le cifre (la regex non sa contarle) e
+    scarta le date. Non e' un checksum: il candidato resta non validato."""
+    if m.group("intl"):
+        cc = "".join(c for c in m.group("intl") if c.isdigit())
+        rest = m.group("rest")
+        if cc == "39":
+            return _it_national_ok(rest)
+        n = _digits(rest)
+        return 6 <= n <= 12 and len(cc) + n <= 15
+    nat = m.group("nat")
+    if _PHONE_DATE.fullmatch(nat):
+        return False
+    return _it_national_ok(nat)
+
+
 DETECTORS = [
     ("EMAIL",
      re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"),
@@ -129,15 +175,38 @@ DETECTORS = [
     ("PIVA",
      re.compile(r"(?<!\d)\d{11}(?!\d)"),
      piva_ok, True),
-    # Telefono: al gruppo dei separatori si aggiunge il trattino, usatissimo sia
-    # sul cellulare ("333-123-4567") sia sul fisso ("010-2471234").
-    ("TELEPHONENUM",
-     re.compile(r"(?<![\w.])(?:\+39[\s.\-]?)?(?:3\d{2}[\s.\-]?\d{3}[\s.\-]?\d{3,4}"
-                r"|0\d{1,3}[\s.\-]?\d{5,8})(?![\w])"),
-     None, True),
+    # Telefono: forma e confini qui, conteggio delle cifre in _phone_shape_ok().
+    # Copre: cellulare e fisso italiani in qualunque raggruppamento ("333 12 34 567",
+    # "02 1234 5678", "011 123 45 67"), prefisso tra parentesi ("(011) 1234567",
+    # "(+39) 333 1234567"), prefisso internazionale con + o 00 ("+41 79 123 45 67",
+    # "0044 20 7946 0958", "+1 (555) 123-4567"). Separatori: spazio, tab, spazio
+    # unificatore, punto, trattino; mai l'a-capo (una colonna di numeri in tabella
+    # non e' un telefono). Il "/" resta fuori: e' il separatore delle date.
+    ("TELEPHONENUM", _PHONE_RX, None, True),
+    # Importo. Due vincoli, entrambi perche' lo span sbagliato e' peggio di un
+    # mancato match: i centesimi restano in chiaro accanto al placeholder, oppure
+    # una parola vicina ci finisce dentro.
+    #   - La valuta e' una parola intera. Senza, "euro" combacia dentro "neuro"
+    #     ("neuro 1500" diventava un importo) e "EUR" dentro "europeo"
+    #     ("12500,00 europeo" si mangiava anche la parola: l'allargamento ai
+    #     confini di parola prosegue sulle lettere). Una cifra puo' stare
+    #     attaccata ("EUR1500"): il confine vieta solo un'altra lettera.
+    #   - Piu' di tre cifre senza separatore di migliaia. "euro 1500,00" si
+    #     fermava a "euro 1500": la virgola non e' un carattere di parola, quindi
+    #     l'allargamento non raggiunge i centesimi e ",00" resta in chiaro.
+    #     I gruppi (punto o spazio, "€ 12.500,00" / "€ 1 250,00") restano.
     ("AMOUNT",
-     re.compile(r"(?:€|EUR|euro)\s?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})?"
-                r"|\d{1,3}(?:\.\d{3})*,\d{2}\s?(?:€|EUR|euro)", re.IGNORECASE),
+     re.compile(
+         r"(?:€|(?<!\w)(?:EUR|euro)(?![A-Za-z]))\s?"
+         r"\d{1,3}(?:[.\s]\d{3})+(?:,\d{2})?"
+         r"|(?:€|(?<!\w)(?:EUR|euro)(?![A-Za-z]))\s?"
+         r"\d+(?:,\d{2})?"
+         r"|(?<!\d)\d{1,3}(?:\.\d{3})+(?:,\d{2})\s?"
+         r"(?:€|(?:EUR|euro)(?![A-Za-z]))"
+         r"|(?<!\d)\d+(?:,\d{2})\s?"
+         r"(?:€|(?:EUR|euro)(?![A-Za-z]))",
+         re.IGNORECASE,
+     ),
      None, True),
     # il trattino e' un separatore quanto lo spazio ("AB-123-CD" nei moduli e negli
     # export): senza, la targa scritta cosi' non viene vista da nessuno dei due lati,
@@ -286,6 +355,54 @@ def detect_iban(text):
     return [e for e in ents if e["end"] > e["start"]]
 
 
+# CF nel formato di STAMPA: le voci CF di DETECTORS vedono solo i sedici caratteri
+# attaccati, ma su tesserini, moduli e intestazioni il codice e' scritto a gruppi
+# ("RSS MRA 85H12 F205Y", "RSSMRA.85H12.F205Y"), a lettere spaziate, o spezzato da
+# un a-capo del testo estratto. Il modello non compensa: su queste forme resta in
+# chiaro, per intero o in parte accanto a un [CF_1] rassicurante.
+#
+# Ogni carattere ha la sua classe (le cifre ammettono le lettere dell'omocodia) e fra
+# due caratteri si tollera un separatore: fino a tre spazi (PDF giustificati), un
+# punto o un trattino, un a-capo. Tre vincoli tengono fuori la prosa:
+#   - i gruppi devono essere quelli con cui il codice si stampa davvero (_CF_GRUPPI);
+#     un solo a-capo invece puo' cadere ovunque, e non conta come confine di gruppo;
+#   - il checksum e' obbligatorio, come per la voce omocodica: con i separatori la
+#     forma da sola e' troppo larga per bastare;
+#   - almeno tre delle sette cifre devono essere cifre vere. Le lettere dell'omocodia
+#     rendono "furono trattenute" (6 + 10) un CF di forma valida, e il checksum passa
+#     una volta su 26: su 470M caratteri di Wikipedia e testo legale sono 4 casi.
+#     L'omocodia sostituisce da destra e raramente piu' di una o due cifre.
+_CF_SEP = r"(?:[^\S\r\n]{1,3}|[^\S\r\n]?[.\-][^\S\r\n]?|[^\S\r\n]*\r?\n[^\S\r\n]*)?"
+_CF_L, _CF_D = r"[A-Za-z]", r"[\dLMNPQRSTUVlmnpqrstuv]"
+_CF_STAMPA = re.compile(r"(?<![A-Za-z0-9])" + _CF_SEP.join(
+    [_CF_L] * 6 + [_CF_D] * 2 + [_CF_L] + [_CF_D] * 2 + [_CF_L] + [_CF_D] * 3 + [_CF_L])
+    + r"(?![A-Za-z0-9])")
+# (16,) e' il codice attaccato che va a capo: tolto l'a-capo, un gruppo solo
+_CF_GRUPPI = {(16,), (3, 3, 5, 5), (6, 5, 5), (6, 10), (6, 2, 1, 2, 4, 1),
+              (3, 3, 2, 1, 2, 4, 1), (1,) * 16}
+_CF_CIFRE_VERE = 3
+
+
+def detect_cf_stampato(text):
+    """CF scritto con separatori; la forma compatta resta alle voci di DETECTORS."""
+    ents = []
+    for m in _CF_STAMPA.finditer(text):
+        s = m.group()
+        if s.isalnum():
+            continue                    # compatto: gia' coperto, con le sue regole
+        if s.count("\n") > 1:
+            continue                    # un codice va a capo una volta; una colonna a ogni cella
+        # l'a-capo non separa un gruppo: si toglie prima di contare i gruppi
+        gruppi = tuple(len(g) for g in re.split(r"[^A-Za-z0-9]+", re.sub(r"\s*\n\s*", "", s)))
+        if gruppi not in _CF_GRUPPI:
+            continue
+        codice = re.sub(r"[^A-Za-z0-9]", "", s)
+        if sum(c.isdigit() for c in codice) >= _CF_CIFRE_VERE and cf_ok(codice):
+            ents.append({"label": "CF", "start": m.start(), "end": m.end(),
+                         "score": 1.0, "validated": True, "source": "regex"})
+    return ents
+
+
 # Dalla piu' lunga: le stesse lunghezze che accetta luhn_ok, cosi' un PAN non viene
 # tagliato a una lunghezza piu' corta che passa il Luhn per caso (con 17 fuori dalla
 # lista, di un PAN di 17 cifre se ne coprivano 16 e l'ultima restava in chiaro).
@@ -320,10 +437,12 @@ def _card_senza_scadenza(text, start, end):
 
 def detect_regex(text):
     """Entita' della rete regex. validated=True solo quando il checksum passa."""
-    ents = detect_iban(text)
+    ents = detect_iban(text) + detect_cf_stampato(text)
     for label, rx, validator, strict in DETECTORS:
         for m in rx.finditer(text):
             start, end = m.start(), m.end()
+            if label == "TELEPHONENUM" and not _phone_shape_ok(m):
+                continue
             if label == "URL":
                 while end > start and text[end - 1] in _URL_TRAIL:
                     end -= 1

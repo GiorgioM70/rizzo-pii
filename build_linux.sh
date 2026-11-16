@@ -36,8 +36,8 @@ command -v npm   >/dev/null || { echo "ERRORE: npm non trovato (installa Node.js
 if [ ! -d "$VENV" ]; then
   python3 -m venv "$VENV"
   "$VENV/bin/pip" install --upgrade pip
-  "$VENV/bin/pip" install --index-url https://download.pytorch.org/whl/cpu torch
-  "$VENV/bin/pip" install "transformers==4.57.3" tokenizers safetensors flask pymupdf pyinstaller
+  "$VENV/bin/pip" install --index-url https://download.pytorch.org/whl/cpu "torch==2.13.0"
+  "$VENV/bin/pip" install "transformers==4.57.3" "tokenizers==0.22.2" "safetensors==0.8.0" "flask==3.1.3" "pymupdf==1.28.2" "huggingface_hub==0.36.2" "pyinstaller==6.22.3"
 fi
 
 # ---- 2) sidecar PyInstaller -> tauri/src-tauri/backend/pii-backend/pii-backend ----

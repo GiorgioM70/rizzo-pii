@@ -17,13 +17,13 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 
-from test_ora import APP  # noqa: E402  (stesso caricamento di app coi pesi finti)
+from test_ora import APP, client  # noqa: E402  (stesso caricamento di app coi pesi finti)
 
 MSG = "PDF protetto da password: rimuovi la protezione e riprova."
 
 
 def _pdf(**cifratura):
-    import fitz
+    import pymupdf as fitz
     doc = fitz.open()
     doc.new_page().insert_text((72, 100), "Il Sig. Mario Rossi, residente a Milano.")
     return doc.tobytes(encryption=fitz.PDF_ENCRYPT_AES_256, **cifratura)
@@ -33,7 +33,7 @@ def _pdf(**cifratura):
 class PdfProtetto(unittest.TestCase):
     def _post(self, route, dati):
         with patch.object(APP, "nlp", lambda chunks: [[] for _ in chunks]):
-            return APP.app.test_client().post(
+            return client().post(
                 route, data={"file": (io.BytesIO(dati), "atto.pdf")},
                 content_type="multipart/form-data")
 

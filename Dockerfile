@@ -32,10 +32,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # torch e transformers PINNATI alle versioni con cui l'immagine e' stata verificata:
 # senza pin la stessa build fra sei mesi tira una major diversa e "funzionava ieri"
 # diventa un bug da riprodurre. Per aggiornarli: alza i numeri e ricostruisci.
-# (NB: transformers 5.x qui, mentre Dockerfile.linux resta sul 4.57.3 di PyInstaller.)
+# (NB: transformers 5.x qui, mentre Dockerfile.linux resta sul 4.57.3 di PyInstaller;
+# per questo huggingface_hub e' 1.x qui e 0.36.x la'. Il resto e' identico ovunque:
+# tests/test_versioni_dipendenze.py lo verifica.)
 RUN pip install --upgrade pip \
  && pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.13.0" \
- && pip install "transformers==5.14.1" tokenizers safetensors flask pymupdf gunicorn huggingface_hub
+ && pip install "transformers==5.14.1" "tokenizers==0.22.2" "safetensors==0.8.0" \
+      "flask==3.1.3" "pymupdf==1.28.2" "gunicorn==27.0.1" "huggingface_hub==1.33.0"
 
 # --- modello -----------------------------------------------------------------
 # app.py con APP_MODEL_VERSION="1.5.0" cerca models/rizzo-pii-0.3B-v1.5.0/ a partire
@@ -64,6 +67,7 @@ ENV HOME=/home/app
 ENV PII_HOST=0.0.0.0 \
     PII_PORT=5005 \
     HF_HUB_OFFLINE=1 \
+    PII_PRELOAD_MODEL=1 \
     TRANSFORMERS_OFFLINE=1
 
 EXPOSE 5005
