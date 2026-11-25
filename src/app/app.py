@@ -68,7 +68,7 @@ import server_config
 # restano importabili da qui (`app.detect_regex`) per non rompere chi li usa.
 from detectors import (DETECTORS, SOFT_REGEX_LABELS, cf_ok,  # noqa: F401
                        complete_time, detect_iban, detect_regex, extend_same_label,
-                       balance_parens, fix_model_labels, iban_ok, luhn_ok, piva_ok)
+                       balance_parens, drop_generic_org, extend_caps_surname, fix_model_labels, iban_ok, luhn_ok, piva_ok)
 
 
 def _resource_path(rel):
@@ -375,6 +375,7 @@ TAG_NAMES = [t[0] for t in TAGS]
 _prefs = server_config.load_prefs()
 EXCLUDED_TAGS = _prefs["excluded_tags"]
 MAPPING_ENABLED = _prefs["mapping_enabled"]
+PDF_LABELS = server_config.load_pdf_labels()   # etichette sulle caselle del PDF (spento = solo rettangolo)
 _PREFS_LOCK = threading.Lock()   # protegge la lettura/scrittura ATOMICA della coppia sopra
 
 
@@ -492,7 +493,7 @@ def _merge(cands, text):
             merged[-1]["end"] = e["end"]
             continue
         merged.append(e)
-    return balance_parens(merged, text)
+    return balance_parens(extend_caps_surname(merged, text), text)
 
 
 def _norm(s):
@@ -566,6 +567,7 @@ def analyze(text, excluded=None, mapping_enabled=True, session_id=None):
     complete_time(model_ents, text)
     # etichette incoerenti col valore ("12345678901234" = IBAN?) PRIMA del filtro dei tag
     fix_model_labels(model_ents, text)
+    model_ents = drop_generic_org(model_ents, text)
     cands = model_ents + detect_regex(text)
     if excluded:
         cands = [e for e in cands if e["label"] not in excluded]
@@ -909,11 +911,14 @@ def _build_anonymized_pdf():
             raise _ReqError(f"Impossibile leggere il file: {e}")
         raw_excl = request.form.get("exclude_tags")
         raw_sid = request.form.get("session_id")
+        raw_lbl = request.form.get("pdf_labels")
     else:
         payload = request.get_json(silent=True) or {}
         name, data, text = "", b"", payload.get("text", "")
         raw_excl = payload.get("exclude_tags")
         raw_sid = payload.get("session_id")
+        raw_lbl = payload.get("pdf_labels")
+    labels = server_config.parse_bool(raw_lbl, PDF_LABELS)   # campo nella richiesta > preferenza
     if raw_sid is not None and not valid_session_id(raw_sid):
         raise _ReqError("session_id non valido.")
 
@@ -938,7 +943,7 @@ def _build_anonymized_pdf():
         try:
             out, report = pdf_export.redact_pdf(
                 data, res["mapping"], ocr_pages=ocr_res.pages,
-                ocr_verify=_ocr_reread if ocr_res.pages else None)
+                ocr_verify=_ocr_reread if ocr_res.pages else None, labels=labels)
         except pdf_export.PdfError as e:
             raise _ReqError(str(e))
         report["no_text_pages"] = ocr_res.warn_pages()
@@ -1071,16 +1076,23 @@ def settings_get():
         "tags": [{"tag": t, "it": it, "en": en, "example": ex} for t, it, en, ex in TAGS],
         "excluded_tags": excl,
         "mapping_enabled": mapping,
+        "pdf_labels": PDF_LABELS,
         "config_path": str(server_config.prefs_path()),
-        "env_override": "PII_EXCLUDE_TAGS" in os.environ or "PII_MAPPING" in os.environ,
+        "env_override": "PII_EXCLUDE_TAGS" in os.environ or "PII_MAPPING" in os.environ
+        or "PII_PDF_LABELS" in os.environ,
     })
 
 
 @app.route("/settings", methods=["POST"])
 @app.route("/tags", methods=["POST"])
 def settings_post():
-    global EXCLUDED_TAGS, MAPPING_ENABLED
+    global EXCLUDED_TAGS, MAPPING_ENABLED, PDF_LABELS
     data = request.get_json(silent=True) or {}
+    if "pdf_labels" in data:
+        with _PREFS_LOCK:
+            PDF_LABELS = server_config.save_pdf_labels(data["pdf_labels"])
+        if "excluded_tags" not in data and "mapping_enabled" not in data:
+            return jsonify({"ok": True, "pdf_labels": PDF_LABELS})
     tags = None
     if "excluded_tags" in data:
         tags = server_config.parse_tag_list(data["excluded_tags"])
@@ -1095,7 +1107,7 @@ def settings_post():
         EXCLUDED_TAGS = saved["excluded_tags"]
         MAPPING_ENABLED = saved["mapping_enabled"]
     return jsonify({"ok": True, "excluded_tags": EXCLUDED_TAGS,
-                    "mapping_enabled": MAPPING_ENABLED})
+                    "mapping_enabled": MAPPING_ENABLED, "pdf_labels": PDF_LABELS})
 
 
 # --------------------------------------------------------------------------- #

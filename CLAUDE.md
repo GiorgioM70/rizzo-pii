@@ -64,7 +64,7 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
 
 **Ambiente di test sul Mac:** `~/Work/rizzo-pii-venv/venv` (Python 3.11 con `--system-site-packages` per torch,
 + `pymupdf flask pytest`). Suite: `venv/bin/python -m unittest discover -s tests` (pytest crasha sulla
-cattura a chiusura: usare unittest). Baseline: 216 test OK. Le prove sul modello vero: `app.analyze(testo)`.
+cattura a chiusura: usare unittest). Baseline: 231 test OK. Le prove sul modello vero: `app.analyze(testo)`.
 
 **Utility / ispezione (read-only) — `src/inspect/`:**
 - `validate_checksums.py` — ricalcola i checksum CF/IBAN/PIVA; **blueprint della rete regex+checksum**
@@ -227,6 +227,27 @@ cattura a chiusura: usare unittest). Baseline: 216 test OK. Le prove sul modello
   `BUILDINGNUM` con > 5 cifre o dopo "matricola/pratica/contratto..." → `DOCID`; `ID_DOC` dopo
   "cliente/contratto/pratica..." → `DOCID`. Un `conto 12345678` resta `IBAN` (CONTO→IBAN in tassonomia).
   Il ✓ nella legenda `TAGS` vale solo per i match col checksum: il testo ora lo dice ("✓ = checksum verificato").
+- **Lettere spaziate nelle intestazioni** (`pdf_text.despace_line` / `raw_lines` / `page_text`). Gli studi
+  legali scrivono l'intestazione con la spaziatura fra i caratteri (`A V V .  M A R I O  R O S S I`):
+  PyMuPDF da' una lettera per volta, **perde i confini di parola**, il modello non vede il nome e
+  l'avvocato restava in chiaro. Le parole si ricostruiscono dalla **geometria** (scarto fra le lettere = Tc;
+  fra le parole circa il doppio). Stessa ricostruzione per l'analisi (`page_text`, usata da
+  `collect_readable_text`) e per la redazione (`pdf_export._page_char_index`, ora costruito da
+  `raw_lines`): cosi' il valore del modello combacia coi caratteri della pagina. **Trappola**: lo scarto da
+  solo non distingue una spaziatura da uno spazio vero, quindi si fonde solo una sequenza di ≥ 5 lettere
+  isolate che copre ≥ 80% della riga ("e a b c d" dentro una frase resta com'e'); prefiltro
+  `looks_letterspaced` sul testo di `get_text()` perche' il caso normale resti identico a prima.
+- **Cognome in MAIUSCOLO davanti al nome** (`detectors.extend_caps_surname`, in coda a `_merge`): "CAMPRA
+  Teresa, nata a" — un cognome raro il modello lo salta o lo scambia per una citta' (`[CITY_3]`).
+  L'ancora e' un FULLNAME seguito da virgola / nato-a / residente / C.F.; la parola in maiuscolo adiacente
+  (anche su riga a parte, come nei PDF con una parola per riga) entra nel nome, e se il modello l'aveva
+  etichettata CITY diventa parte del nome. Lista `_CAPS_STOP` (RICORRENTE, TRIBUNALE, CONTRO...): senza
+  ancora una parola maiuscola non basta. `drop_generic_org`: "STUDIO LEGALE" da solo non e' un ORG.
+- **Etichette sulle caselle del PDF on/off** (`redact_pdf(labels=)`, pref `pdf_labels` in `prefs.json`,
+  env `PII_PDF_LABELS`, campo `pdf_labels` di `/pdf` e `/pdf/preview`, switch "Etichette sul PDF" nella card
+  di input). Spento = solo il rettangolo colorato, senza `[DATE_1]`/`[FIRMA]`. Cambia solo cio' che si vede:
+  la rimozione resta vera. Il testo anonimizzato a fianco non cambia. Chiave a parte da `load_prefs()`
+  (`server_config.load_pdf_labels/save_pdf_labels`) per non cambiare la forma di quel dizionario.
 - **Firme nel PDF** (`pdf_export._redact_signature_shapes` / `_redact_signature_images` /
   `_scrub_signature_data`). Il nome sotto "F.to" lo trova il modello; la firma vera no, perche' non e'
   testo. Si tolgono PER FORMA: campi `/Sig`, annotazioni **Ink** e **Stamp** (sempre); tracciati a mano

@@ -602,6 +602,72 @@ def extend_same_label(cands):
     return cands
 
 
+# --------------------------------------------------------------------------- #
+# Cognome in MAIUSCOLO attaccato al nome ("CAMPRA Teresa, nata a ...")
+#
+# Negli atti la parte si scrive "COGNOME Nome, nato a ...". Un cognome raro in
+# maiuscolo il modello non lo conosce: o lo salta (resta in chiaro accanto a
+# "[FULLNAME_4]") o lo scambia per una citta' se somiglia a un toponimo
+# ("[CITY_3] [FULLNAME_2]"). Qui si guarda l'ANCORA, non la parola: un nome di
+# persona riconosciuto, e subito dopo la virgola o "nato/a", "residente", "C.F.",
+# la forma con cui si presenta una parte. La parola in maiuscolo che lo precede (o lo
+# segue, "Mario ROSSI") si aggiunge al nome; se il modello la aveva etichettata
+# CITY, diventa parte del nome. Una parola maiuscola da sola non basta: "TRIBUNALE",
+# "RICORRENTE", "CONTRO" restano fuori (lista, e serve l'ancora).
+# --------------------------------------------------------------------------- #
+_CAPS_WORD = r"[A-Z\u00c0-\u00dd][A-Z\u00c0-\u00dd'\u2019\-]{2,}"
+_CAPS_BEFORE = re.compile(r"(?<![A-Za-z\u00c0-\u00ff0-9'\u2019\-.])(" + _CAPS_WORD +
+                          r")[ \t]*(?:\r?\n[ \t]*){0,2}\Z")
+_CAPS_AFTER = re.compile(r"[ \t]*(?:\r?\n[ \t]*){0,2}(" + _CAPS_WORD +
+                         r")(?![A-Za-z\u00c0-\u00ff0-9'\u2019\-.])")
+_PARTY_TAIL = re.compile(r"\s*(?:,|\(|nat[oa]\b|residente\b|domiciliat[oa]\b|C\.?\s?F\b)",
+                         re.I)
+_CAPS_STOP = {
+    "RICORRENTE", "RESISTENTE", "ATTORE", "ATTRICE", "CONVENUTO", "CONVENUTA", "APPELLANTE",
+    "APPELLATO", "OPPONENTE", "OPPOSTO", "CREDITORE", "DEBITORE", "LOCATORE", "CONDUTTORE",
+    "VENDITORE", "COMPRATORE", "ACQUIRENTE", "CONTRO", "TRIBUNALE", "UDIENZA", "MEMORIA",
+    "PARTE", "PARTI", "SIGNOR", "SIGNORA", "DOTT", "DOTTORE", "DOTTORESSA", "AVVOCATO",
+    "NOTAIO", "GIUDICE", "PROCURA", "OGGETTO", "SENTENZA", "ORDINANZA", "DECRETO",
+    "COMUNE", "PROVINCIA", "REGIONE", "ITALIANA", "REPUBBLICA", "STUDIO", "LEGALE",
+    "SOCIETA", "SOCIET\u00c0", "ATTO", "CITAZIONE", "RICORSO", "PREMESSO", "CONCLUSIONI",
+    "FATTO", "DIRITTO", "SVOLGIMENTO", "MOTIVI", "VISTO", "VISTI", "NONCHE", "NONCH\u00c9",
+}
+
+
+def extend_caps_surname(ents, text):
+    """Aggiunge al nome di persona il cognome in MAIUSCOLO che lo affianca, quando
+    la forma e' quella di una parte ("COGNOME Nome, nato a"). Sul posto, su entita'
+    gia' fuse e ordinate; ritorna la stessa lista."""
+    ents.sort(key=lambda e: e["start"])
+    for i, e in enumerate(ents):
+        if e["label"] != "FULLNAME":
+            continue
+        # prima: "COGNOME Nome,"
+        if _PARTY_TAIL.match(text, e["end"]):
+            prev_end = ents[i - 1]["end"] if i else 0
+            lo = max(prev_end, e["start"] - 80)
+            m = _CAPS_BEFORE.search(text[lo:e["start"]])
+            if m and m.group(1) not in _CAPS_STOP:
+                e["start"] = lo + m.start(1)
+            elif i and ents[i - 1]["label"] == "CITY":
+                c = ents[i - 1]
+                w = text[c["start"]:c["end"]]
+                gap = text[c["end"]:e["start"]]
+                if (re.fullmatch(_CAPS_WORD, w) and w not in _CAPS_STOP
+                        and re.fullmatch(r"[ \t]*(?:\r?\n[ \t]*){0,2}", gap)
+                        and not re.search(r"\b(?:a|in|di|da|presso|comune)\s*\Z",
+                                          text[max(0, c["start"] - 12):c["start"]], re.I)):
+                    e["start"] = c["start"]          # la "citta'" era il cognome
+                    c["label"] = "FULLNAME"
+                    c["_absorbed"] = True
+        # dopo: "Nome COGNOME,"
+        m = _CAPS_AFTER.match(text, e["end"])
+        if m and m.group(1) not in _CAPS_STOP and _PARTY_TAIL.match(text, m.end()) \
+                and (i + 1 == len(ents) or ents[i + 1]["start"] >= m.end()):
+            e["end"] = m.end(1)
+    return [e for e in ents if not e.pop("_absorbed", False)]
+
+
 def balance_parens(ents, text):
     """Una span con una parentesi aperta e non chiusa ("euro 15.000,00 (quindicimila/00")
     lascia la chiusa accanto al segnaposto: "[AMOUNT_1])". Se la parentesi mancante e'
@@ -636,6 +702,21 @@ _CTX_CODE = re.compile(r"matricola|pratica|contratto|polizza|cliente|fascicolo|o
 
 def _n_digits(v):
     return sum(c.isdigit() for c in v)
+
+
+# "STUDIO LEGALE" da solo, nell'intestazione, non e' una ragione sociale: il nome sta
+# accanto e si maschera da se'. Il modello lo etichetta ORG, e una casella viola al
+# posto di una dicitura generica e' solo rumore (e fuorvia chi legge).
+_GENERIC_ORG = {"studio legale", "studio", "studio associato", "studio legale associato",
+                "societa", "società", "tribunale", "ditta", "azienda", "banca"}
+
+
+def drop_generic_org(ents, text):
+    """Toglie le entita' ORG che sono solo una parola generica ("Studio Legale")."""
+    return [e for e in ents
+            if not (e["label"] == "ORG" and e.get("source") == "modello"
+                    and re.sub(r"\s+", " ", text[e["start"]:e["end"]]).strip().casefold()
+                    in _GENERIC_ORG)]
 
 
 def fix_model_labels(ents, text):

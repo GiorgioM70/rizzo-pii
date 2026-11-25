@@ -96,6 +96,8 @@ def save_config(host: str, port: int):
 #   excluded_tags   -> tag rilevati ma NON sostituiti (restano in chiaro)
 #   mapping_enabled -> false = niente dizionario placeholder->valore, quindi
 #                      l'anonimizzazione e' definitiva e non reversibile
+#   pdf_labels      -> false = nelle caselle del PDF redatto solo il rettangolo,
+#                      senza il testo [DATE_1], [CITY_1]...
 # --------------------------------------------------------------------------- #
 PREFS_FILE = "prefs.json"
 LEGACY_PREFS_FILE = "tags.json"   # nome usato prima che il file contenesse anche il mapping
@@ -165,6 +167,31 @@ def load_prefs() -> dict:
         "excluded_tags": parse_tag_list(tags),
         "mapping_enabled": parse_bool(mapping, DEFAULT_MAPPING_ENABLED),
     }
+
+
+DEFAULT_PDF_LABELS = True
+
+
+def load_pdf_labels() -> bool:
+    """Etichette ([DATE_1]...) scritte sulle caselle del PDF redatto. Spento = solo il
+    rettangolo colorato. Catena: env PII_PDF_LABELS > prefs.json > default (acceso).
+    Chiave a parte rispetto a load_prefs(): non cambia la forma di quel dizionario."""
+    v = _read_prefs_file().get("pdf_labels", DEFAULT_PDF_LABELS)
+    if "PII_PDF_LABELS" in os.environ:
+        v = os.environ["PII_PDF_LABELS"]
+    return parse_bool(v, DEFAULT_PDF_LABELS)
+
+
+def save_pdf_labels(value) -> bool:
+    """Scrive `pdf_labels` in prefs.json lasciando intatte le altre chiavi."""
+    data = _read_prefs_file()
+    data["pdf_labels"] = parse_bool(value, DEFAULT_PDF_LABELS)
+    data.setdefault("excluded_tags", [])
+    data.setdefault("mapping_enabled", DEFAULT_MAPPING_ENABLED)
+    d = config_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / PREFS_FILE).write_text(json.dumps(data, indent=2), "utf-8")
+    return data["pdf_labels"]
 
 
 def save_prefs(excluded_tags=None, mapping_enabled=None) -> dict:

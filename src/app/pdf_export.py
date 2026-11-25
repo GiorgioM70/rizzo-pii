@@ -118,21 +118,16 @@ def _covered(rect, taken, thr=0.85):
 # --------------------------------------------------------------------------- #
 def _page_char_index(page):
     """(testo, [bbox per carattere]) dalla pagina: ogni carattere del layer
-    testuale con il suo rettangolo (None per i newline di fine riga)."""
-    raw = page.get_text("rawdict")
+    testuale con il suo rettangolo (None per i newline di fine riga e per gli
+    spazi ricostruiti). Le lettere spaziate sono riunite in parole, come nel testo
+    che ha visto il modello (pdf_text.raw_lines)."""
     chars, boxes = [], []
-    for block in raw.get("blocks", []):
-        if block.get("type") != 0:          # solo blocchi di testo
-            continue
-        for line in block.get("lines", []):
-            for span in line.get("spans", []):
-                for ch in span.get("chars", []):
-                    c = ch.get("c") or ""
-                    for cc in c:            # ligature -> piu' caratteri, stesso bbox
-                        chars.append(cc)
-                        boxes.append(fitz.Rect(ch["bbox"]))
-            chars.append("\n")
-            boxes.append(None)
+    for line in pdf_text.raw_lines(page) or []:
+        for c, bb in line:
+            chars.append(c)
+            boxes.append(fitz.Rect(bb) if bb is not None else None)
+        chars.append("\n")
+        boxes.append(None)
     return "".join(chars), boxes
 
 
@@ -374,18 +369,18 @@ def _near(rect, cues, taken=()):
             or any(r.intersects(t) for t in taken))
 
 
-def _sig_box(page, rect, taken, fill, text_color):
+def _sig_box(page, rect, taken, fill, text_color, labels=True):
     r = fitz.Rect(rect) + (-1, -1, 1, 1)
     r &= page.rect
     if r.is_empty or r.width < 2 or r.height < 2:
         return 0
-    fs = _fit_fontsize(SIG_LABEL, r)
+    fs = _fit_fontsize(SIG_LABEL, r) if labels else 0
     _add_redact_annot(page, r, SIG_LABEL if fs else None, fs or 6, fill, text_color)
     taken.append(fitz.Rect(r))
     return 1
 
 
-def _redact_signature_shapes(page, taken, fill, text_color):
+def _redact_signature_shapes(page, taken, fill, text_color, labels=True):
     """Fase 1 (prima dei nomi): campi di firma, Ink, Stamp, tracciati a mano libera.
     Applica subito le redazioni; ritorna quante firme ha tolto."""
     n = 0
@@ -403,7 +398,7 @@ def _redact_signature_shapes(page, taken, fill, text_color):
             page.delete_widget(w)
         except Exception:
             continue
-        n += _sig_box(page, rect, taken, fill, text_color)
+        n += _sig_box(page, rect, taken, fill, text_color, labels)
     # 2) tratti a mano libera e timbri
     try:
         annots = [a for a in page.annots()
@@ -416,7 +411,7 @@ def _redact_signature_shapes(page, taken, fill, text_color):
             page.delete_annot(a)
         except Exception:
             continue
-        n += _sig_box(page, rect, taken, fill, text_color)
+        n += _sig_box(page, rect, taken, fill, text_color, labels)
     # 3) tracciati vettoriali a mano libera: molte curve, quasi nessun segmento dritto,
     #    non un'ellisse chiusa (pulsante radio, timbro tondo vuoto)
     cues = _cue_rects(page)
@@ -436,7 +431,7 @@ def _redact_signature_shapes(page, taken, fill, text_color):
         if d.get("closePath") and r.height and 0.6 <= r.width / r.height <= 1.7:
             continue
         if _near(r, cues):
-            n += _sig_box(page, r, taken, fill, text_color)
+            n += _sig_box(page, r, taken, fill, text_color, labels)
             vector = True
     if n:
         # un tracciato non viene rimosso da graphics="se coperto" (le curve escono dal
@@ -448,7 +443,7 @@ def _redact_signature_shapes(page, taken, fill, text_color):
     return n
 
 
-def _redact_signature_images(page, taken, fill, text_color):
+def _redact_signature_images(page, taken, fill, text_color, labels=True):
     """Fase 2 (dopo i nomi, prima di apply_redactions): immagini piccole vicino a una
     dicitura di firma o sopra un nome appena redatto. Le caselle le applica il chiamante."""
     n = 0
@@ -465,7 +460,7 @@ def _redact_signature_images(page, taken, fill, text_color):
                 or r.width > SIG_MAX_W * pr.width or r.height > SIG_MAX_H * pr.height):
             continue
         if _near(r, cues, taken):
-            n += _sig_box(page, r, taken, fill, text_color)
+            n += _sig_box(page, r, taken, fill, text_color, labels)
     return n
 
 
@@ -745,7 +740,7 @@ def _flatten_to_image(page):
 
 
 def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
-               ocr_pages=None, ocr_verify=None):
+               ocr_pages=None, ocr_verify=None, labels=True):
     """PDF originale -> PDF con redazione vera + placeholder al posto delle PII.
 
     mapping: {"[FULLNAME_1]": "Mario Rossi", ...} (il dizionario di analyze()).
@@ -756,6 +751,9 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
         dell'immagine sotto (images=PDF_REDACT_IMAGE_PIXELS, il default) e la
         casella viola ci va sopra. Senza questo, nel PDF in uscita la scansione
         resterebbe com'era.
+    labels: True = su ogni casella il suo segnaposto ([DATE_1], [FIRMA]...); False =
+        solo il rettangolo colorato, senza testo (impostazione "etichette sul PDF").
+        Non cambia cosa viene rimosso, solo cosa si vede al suo posto.
     ocr_verify: funzione (pdf_bytes_in_uscita, [indici]) -> {indice: OcrPage}
         che RILEGGE con l'OCR le pagine redatte. Un valore ancora leggibile finisce
         in "residual" come per il testo; una pagina che non si riesce a rileggere
@@ -831,7 +829,7 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
                 for r in rects:
                     if _covered(r, taken):
                         continue
-                    fs = 0 if labeled else _fit_fontsize(ph, r)
+                    fs = 0 if (labeled or not labels) else _fit_fontsize(ph, r)
                     _add_redact_annot(page, r, ph if fs else None,
                                       fs or 6, fill, text_color)
                     taken.append(fitz.Rect(r))
@@ -862,7 +860,7 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
         #     PRIMA delle caselle dei nomi: i tracciati vettoriali si tolgono solo con
         #     graphics=TOUCHED, che altrimenti si porterebbe via anche i bordi di tabella
         #     toccati dalle altre caselle della pagina.
-        n_sig += _redact_signature_shapes(page, taken, fill, text_color)
+        n_sig += _redact_signature_shapes(page, taken, fill, text_color, labels)
         # 1) layer testuale (anche sulle scansioni: il testo nascosto dello
         #    scanner va tolto dove contiene i valori)
         text, boxes = _page_char_index(page)
@@ -876,7 +874,7 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
                 ink = None
             total += _redact_text(page, o_text, o_boxes, taken, pad=True, ink=ink)
         # 3) immagini-firma: dopo i nomi, cosi' "sopra un nome redatto" vale qualcosa
-        n_sig += _redact_signature_images(page, taken, fill, text_color)
+        n_sig += _redact_signature_images(page, taken, fill, text_color, labels)
         if taken:
             page.apply_redactions()   # rimozione VERA dal content stream
         # dopo le redazioni: annotazioni e campi modulo non sono content stream

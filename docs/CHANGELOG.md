@@ -5,6 +5,32 @@ Le voci più recenti in alto. (Codice: `src/training/train_pii.py` salvo diverso
 
 ---
 
+## 2026-11-25 (2) — Intestazione a lettere spaziate, cognome in maiuscolo, etichette del PDF on/off
+
+Da due atti reali anonimizzati dall'app (solo gli output, non gli originali: la causa e' stata
+ricostruita dal testo e riprodotta con PDF sintetici).
+
+**Nome dell'avvocato nell'intestazione.** Non era un'immagine: era testo con la spaziatura fra i caratteri
+(`S T U D I O  L E G A L E`). PyMuPDF restituisce `A V V . B R U N E L L O ...` senza confini di parola, il
+modello non riconosce un nome fatto di lettere isolate e il nome restava in chiaro (nel PDF del cliente e'
+stato coperto a mano). Ora le parole si ricostruiscono dalla geometria dei caratteri
+(`pdf_text.despace_line`), per l'analisi e per la redazione. Solo sequenze di ≥ 5 lettere isolate che
+coprono ≥ 80% della riga: un elenco "e a b c d" in una frase non si tocca. **Non risolto**: il monogramma
+"AF" e' un'immagine del logo, e un'immagine non si legge (vedi sotto).
+
+**Cognome in chiaro nella prima pagina.** Cognome in maiuscolo davanti al nome ("COGNOME Nome, nata a"): il
+modello non conosce quello raro, e quando somiglia a un toponimo lo etichetta CITY (`[CITY_3]`).
+`extend_caps_surname` lo aggiunge al nome se la forma e' quella di una parte (virgola, nato/a, residente,
+C.F.); lista di parole che non sono cognomi (RICORRENTE, TRIBUNALE, CONTRO...). "STUDIO LEGALE" da solo
+non e' piu' mascherato come ORG.
+
+**Etichette sulle caselle.** Nuova impostazione "Etichette sul PDF" (switch nella card di input,
+`pdf_labels` in `prefs.json`, env `PII_PDF_LABELS`, campo `pdf_labels` delle API): spenta, nel PDF resta solo
+il rettangolo colorato. Cambia solo l'aspetto; la rimozione del testo resta vera.
+
+Test: `tests/test_intestazioni_cognomi_etichette.py` (15). Suite 216 → 231 OK. Prova end-to-end col modello
+vero: intestazione spaziata, cognome raro in maiuscolo, 0 residui, con e senza etichette.
+
 ## 2026-11-25 — Firme, etichette fuorvianti, numeri e date in lettere (`words_it.py`, `detectors.py`, `pdf_export.py`)
 
 Tre segnalazioni, riprodotte una per una col modello v1.5.0 vero prima di toccare il codice.
