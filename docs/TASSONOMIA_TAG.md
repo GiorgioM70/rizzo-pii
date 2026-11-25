@@ -50,6 +50,15 @@ riconoscere. È la **fonte di verità** quando si riprende il progetto: descrive
 >   una versione con tutti i numeri per caso ≤ 255 (es. `1.2.3.4`) resta indistinguibile da un IP
 >   vero — non risolvibile con la sola forma, servirebbe il modello.
 
+> **Etichette corrette dopo il modello** (`detectors.fix_model_labels`, vedi `CLAUDE.md`): un `IBAN`/
+> `PIVA`/`CREDITCARDNUMBER` del modello senza checksum, forma e contesto giusti diventa `DOCID`; un
+> `BUILDINGNUM` con più di 5 cifre (o dopo "matricola"/"pratica"/...) e un `ID_DOC` dopo
+> "cliente"/"contratto"/... diventano `DOCID`. L'entità resta mascherata, cambia solo il segnaposto.
+>
+> **Date e importi anche in lettere** (`words_it.py`): `DATE` e `AMOUNT` coprono anche "quindici maggio
+> millenovecentoottanta", "euro quindicimila/00", "3 mila euro". Le firme non testuali di un PDF
+> (immagini, tratti, timbri, campi firma) non sono un tag: si rimuovono per forma, vedi `pdf_export`.
+
 Formato BIO: ogni tag esiste come `B-<TAG>` (inizio entità) e `I-<TAG>` (continuazione),
 più `O` (token non sensibile). I token adiacenti dello stesso tipo vengono fusi in una
 sola entità da `normalize_labels()`.

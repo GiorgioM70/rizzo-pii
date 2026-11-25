@@ -68,6 +68,15 @@
               <div class="sub" id="mapSub">Ogni PII riceve un ID: potrai ripristinare i valori veri dalla risposta dell'LLM.</div>
             </div>
           </div>
+          <div class="mapsw" id="lblSw">
+            <button class="tsw" id="lblToggle" role="switch" aria-checked="true"
+                    aria-labelledby="lblTtl" onclick="toggleLabels()"><span class="knob"></span></button>
+            <div>
+              <div class="ttl" id="lblTtl"><span data-i18n="lbl_ttl">Etichette sul PDF</span>
+                <span class="st" id="lblState">ATTIVE</span></div>
+              <div class="sub" id="lblSub">Sulle caselle del PDF anonimizzato compare il segnaposto ([DATE_1], [CITY_1]…).</div>
+            </div>
+          </div>
           <div class="row">
             <button class="btn lg" id="go">🛡️ <span data-i18n="go">Anonimizza</span></button>
             <button class="ghost" id="clear" data-i18n="clear">Pulisci</button>

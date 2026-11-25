@@ -33,7 +33,7 @@ def collect_readable_text(doc, redact_annot_type=REDACT_ANNOT, page_texts=None):
         if i in page_texts:
             parts.append(page_texts[i] or "")
         else:
-            parts.append(page.get_text() or "")
+            parts.append(page_text(page))
         try:
             for a in page.annots() or ():
                 if a.type[0] == redact_annot_type:
@@ -54,6 +54,139 @@ def collect_readable_text(doc, redact_annot_type=REDACT_ANNOT, page_texts=None):
     except Exception:
         pass
     return "\n".join(parts)
+
+
+# --------------------------------------------------------------------------- #
+# Testo con le lettere SPAZIATE ("S T U D I O  L E G A L E", "A V V . M A R I O ...")
+#
+# Le intestazioni degli studi legali sono spesso scritte con la spaziatura tra i
+# caratteri (Tc). PyMuPDF la restituisce come un carattere di spazio fra ogni lettera
+# e perde i confini di parola: "AVV. MARIO ROSSI" diventa "A V V . M A R I O R O S S I".
+# Il modello non riconosce un nome fatto di lettere isolate, quindi il nome
+# dell'avvocato restava in chiaro. Qui si ricostruiscono le parole dalla GEOMETRIA: tra
+# due lettere della stessa parola lo scarto e' quello della spaziatura, tra due parole
+# e' circa il doppio (spaziatura + spazio vero + spaziatura).
+# La stessa ricostruzione serve all'analisi (page_text) e alla redazione
+# (pdf_export._page_char_index): cosi' il valore trovato dal modello combacia con i
+# caratteri della pagina.
+# --------------------------------------------------------------------------- #
+LETTERSPACED_MIN_RUN = 4        # lettere isolate di fila per parlare di spaziatura
+_WORD_GAP_FACTOR = 1.5          # scarto > 1,5 x quello mediano = confine di parola
+
+
+def looks_letterspaced(text):
+    """Prefiltro economico sul testo di get_text(): quattro o piu' lettere isolate
+    di fila, separate da un solo spazio."""
+    import re
+    return re.search(r"(?<!\S)(?:[^\W\d_] ){%d,}[^\W\d_](?!\S)" % (LETTERSPACED_MIN_RUN - 1),
+                     text) is not None
+
+
+def despace_line(items):
+    """items = [(carattere, (x0, y0, x1, y1) o None)] di UNA riga.
+    Ritorna la stessa forma con le lettere spaziate riunite in parole: via gli spazi
+    sintetici fra le lettere, un solo spazio (senza riquadro) fra le parole.
+    Le righe senza almeno LETTERSPACED_MIN_RUN lettere isolate restano come sono."""
+    # token = gruppi di caratteri separati da spazi
+    toks, cur = [], []
+    for it in items:
+        if it[0].isspace():
+            if cur:
+                toks.append(cur)
+                cur = []
+        else:
+            cur.append(it)
+    if cur:
+        toks.append(cur)
+    if len(toks) < LETTERSPACED_MIN_RUN:
+        return items
+
+    def single_letter(t):
+        return len(t) == 1 and t[0][0].isalpha() or (len(t) == 1 and t[0][0] in ".,'")
+
+    # le sequenze di token a lettera singola (con almeno una lettera vera ogni due)
+    out, i, n = [], 0, len(toks)
+    changed = False
+    while i < n:
+        if not single_letter(toks[i]):
+            out.append(toks[i])
+            i += 1
+            continue
+        j = i
+        while j < n and single_letter(toks[j]):
+            j += 1
+        run = toks[i:j]
+        letters = sum(1 for t in run if t[0][0].isalpha())
+        boxes = [t[0][1] for t in run]
+        # la sequenza deve essere (quasi) tutta la riga: "e a b c d" dentro una frase
+        # normale e' un elenco, non una spaziatura. Il solo scarto fra le lettere non
+        # distingue (la spaziatura e' spesso simile a uno spazio vero).
+        if (len(run) < LETTERSPACED_MIN_RUN + 1 or letters * 10 < len(run) * 7
+                or len(run) * 10 < len(toks) * 8
+                or any(b is None for b in boxes)):
+            out.extend(run)
+            i = j
+            continue
+        gaps = [boxes[k + 1][0] - boxes[k][2] for k in range(len(run) - 1)]
+        pos = sorted(g for g in gaps if g > 0.05)
+        if not pos:
+            out.extend(run)
+            i = j
+            continue
+        med = pos[len(pos) // 2]
+        word = []
+        for k, t in enumerate(run):
+            word.append(t[0])
+            if k < len(gaps) and gaps[k] > _WORD_GAP_FACTOR * med:
+                out.append(word)
+                word = []
+        if word:
+            out.append(word)
+        changed = True
+        i = j
+    if not changed:
+        return items
+    res = []
+    for k, tok in enumerate(out):
+        if k:
+            res.append((" ", None))
+        res.extend(tok)
+    return res
+
+
+def raw_lines(page):
+    """Le righe del layer testuale come liste di (carattere, bbox), dal rawdict di
+    PyMuPDF, con le lettere spaziate gia' riunite. Una lista per riga, nell'ordine
+    del documento. Ritorna None se la pagina non offre il rawdict."""
+    try:
+        raw = page.get_text("rawdict")
+    except Exception:
+        return None
+    lines = []
+    for block in raw.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            items = []
+            for span in line.get("spans", []):
+                for ch in span.get("chars", []):
+                    for cc in (ch.get("c") or ""):      # ligature -> piu' caratteri
+                        items.append((cc, tuple(ch["bbox"])))
+            lines.append(despace_line(items))
+    return lines
+
+
+def page_text(page):
+    """Testo della pagina per l'ANALISI. Come get_text(), ma con le lettere spaziate
+    riunite in parole. Solo se il testo ne ha l'aria si passa dal rawdict: il caso
+    normale resta get_text() identico a prima."""
+    txt = page.get_text() or ""
+    if not looks_letterspaced(txt):
+        return txt
+    lines = raw_lines(page)
+    if not lines:
+        return txt
+    return "\n".join("".join(c for c, _ in ln) for ln in lines) + "\n"
 
 
 # Sotto questa soglia (spazi esclusi) il layer testuale di una pagina e' "quasi

@@ -51,6 +51,7 @@ let L = 'it';              // lingua UI corrente
 let TAGS = [];             // legenda dei tag servita da /settings
 let EXCL = new Set();      // tag da NON anonimizzare (scelta corrente)
 let TAGS_LOADED = false;   // /settings ha risposto -> possiamo mandare gli override
+let PDF_LABELS = true;     // etichette ([DATE_1]...) sulle caselle del PDF (switch nella card di input)
 let MAPPING = true;        // dizionario reversibile on/off (switch nella card di input)
 let SRC_DOC = null;        // PDF caricato, renderizzato dal server (colonna sinistra)
 let OUT_DOC = null;        // PDF anonimizzato (colonna destra), generato pigramente
@@ -80,6 +81,7 @@ const T = {
   t_no_text:p=>"ATTENZIONE: "+(p.length===1?"la pagina "+p[0]+" non ha":"le pagine "+p.join(", ")+" non hanno")+" testo leggibile (scansione?) e qui non c'e' l'OCR: le PII che contengono restano visibili, anche nel PDF anonimizzato.",
   t_ocr:p=>(p.length===1?"Pagina "+p[0]+" letta":"Pagine "+p.join(", ")+" lette")+" con l'OCR (scansione): il riconoscimento puo' sbagliare, controlla il risultato prima di condividerlo.",
   t_ocr_unverified:p=>"ATTENZIONE: "+(p.length===1?"sulla pagina "+p[0]:"sulle pagine "+p.join(", "))+" (scansione) non e' stato possibile ricontrollare con l'OCR che le PII siano coperte: verifica il PDF a occhio prima di condividerlo.",
+  t_sig:n=>n+(n===1?" firma rimossa":" firme rimosse")+" dal PDF (immagini, tratti, timbri, campi firma). Le firme dentro pagine scansionate non si riconoscono: controllale a occhio.",
   t_pdf_warn:(r,s)=>"PDF scaricato · ATTENZIONE: "+(r+s)+" valori sono rimasti in chiaro"
     +" ("+r+" non redatti, "+s+" troppo corti per essere cercati): controlla il file"
     +" prima di condividerlo",
@@ -123,6 +125,10 @@ const T = {
   map_sub_on:"Ogni PII riceve un ID: potrai ripristinare i valori veri dalla risposta dell'LLM.",
   map_sub_off:"Anonimizzazione <b>definitiva</b>: nessuna chiave placeholder → valore viene creata, salvata o scaricabile. Il ripristino non sarà possibile.",
   t_map_on:"Dizionario reversibile attivo", t_map_off:"Dizionario disattivato: anonimizzazione definitiva",
+  lbl_ttl:"Etichette sul PDF", lbl_on:"ATTIVE", lbl_off:"DISATTIVATE",
+  lbl_sub_on:"Sulle caselle del PDF anonimizzato compare il segnaposto ([DATE_1], [CITY_1]…).",
+  lbl_sub_off:"Sul PDF anonimizzato resta <b>solo il rettangolo colorato</b>, senza testo. Il testo anonimizzato a fianco non cambia.",
+  t_lbl_on:"Etichette sul PDF attive", t_lbl_off:"PDF con soli rettangoli, senza etichette",
   dict_off:"Nessun dizionario: l'anonimizzazione di questo testo è <b>definitiva</b>.",
   dict_off_hint:"lo switch è su DISATTIVO",
   r_off:"Lo switch <b>Dizionario reversibile</b> è su DISATTIVO: le nuove anonimizzazioni non producono chiavi. Qui puoi comunque ripristinare con un dizionario <b>.json salvato in precedenza</b>.",
@@ -149,6 +155,7 @@ const T = {
   t_no_text:p=>"WARNING: "+(p.length===1?"page "+p[0]+" has":"pages "+p.join(", ")+" have")+" no readable text (scanned?) and OCR is not available here: any PII on them stays visible, in the anonymized PDF too.",
   t_ocr:p=>(p.length===1?"Page "+p[0]:"Pages "+p.join(", "))+" read with OCR (scanned): recognition can make mistakes, check the result before sharing it.",
   t_ocr_unverified:p=>"WARNING: on "+(p.length===1?"page "+p[0]:"pages "+p.join(", "))+" (scanned) OCR could not re-check that the PII are covered: inspect the PDF before sharing it.",
+  t_sig:n=>n+(n===1?" signature":" signatures")+" removed from the PDF (images, ink, stamps, signature fields). Signatures inside scanned pages cannot be recognised: check them by eye.",
   t_pdf_warn:(r,s)=>"PDF downloaded · WARNING: "+(r+s)+" values were left in clear"
     +" ("+r+" not redacted, "+s+" too short to be searched safely): check the file"
     +" before sharing it",
@@ -192,6 +199,10 @@ const T = {
   map_sub_on:"Every PII gets an ID: you will be able to restore the real values from the LLM's answer.",
   map_sub_off:"<b>Irreversible</b> anonymization: no placeholder → value key is created, stored or downloadable. Restoring will not be possible.",
   t_map_on:"Reversible dictionary on", t_map_off:"Dictionary off: anonymization is irreversible",
+  lbl_ttl:"Labels on the PDF", lbl_on:"ON", lbl_off:"OFF",
+  lbl_sub_on:"The anonymized PDF shows the placeholder on each box ([DATE_1], [CITY_1]…).",
+  lbl_sub_off:"The anonymized PDF shows <b>only the coloured rectangle</b>, no text. The anonymized text next to it does not change.",
+  t_lbl_on:"PDF labels on", t_lbl_off:"PDF with plain rectangles, no labels",
   dict_off:"No dictionary: anonymization of this text is <b>irreversible</b>.",
   dict_off_hint:"the switch is OFF",
   r_off:"The <b>Reversible dictionary</b> switch is OFF: new anonymizations produce no keys. You can still restore here using a <b>.json dictionary saved earlier</b>.",
@@ -213,7 +224,7 @@ function applyLang(l){
     const v=T[L][el.getAttribute('data-i18n-ph')]; if(v!=null) el.placeholder=v;});
   if(!$('pdf').files.length) $('dropTxt').innerHTML=tt('drop');   // dropzone: solo se nessun file
   if(!$('rout')._raw) $('rout').innerHTML=routEmpty();
-  renderMapping();
+  renderMapping();renderLabels();
   if(TAGS.length && $('tagsOverlay').classList.contains('open')) renderTags();
   if(DATA) render();
 }
@@ -243,6 +254,7 @@ function warnNoText(d){
   const p=(d&&d.pages_no_text)||[], u=(d&&d.ocr_unverified)||[], o=(d&&d.pages_ocr)||[];
   if(p.length){toast(T[L].t_no_text(p),false,12000);return true;}
   if(u.length){toast(T[L].t_ocr_unverified(u),false,12000);return true;}
+  if(d&&d.signatures>0){toast(T[L].t_sig(d.signatures),true,9000);return true;}
   if(o.length){toast(T[L].t_ocr(o),true,7000);return true;}
   return false;}
 function toast(msg,ok=true,ms=1800){const t=$('toast');t.textContent=msg;t.className='show'+(ok?' ok':'');
@@ -468,9 +480,10 @@ function buildOutPdf(){
     try{
       let resp;
       if(file){const fd=new FormData();fd.append('pdf',file);fd.append('session_id',SESSION_ID);
+        fd.append('pdf_labels',PDF_LABELS?'1':'0');
         if(excl)fd.append('exclude_tags',excl.join(','));
           resp=await fetch('/pdf/preview',{method:'POST',body:fd});}
-      else{const body={text,session_id:SESSION_ID};if(excl)body.exclude_tags=excl;
+      else{const body={text,session_id:SESSION_ID,pdf_labels:PDF_LABELS};if(excl)body.exclude_tags=excl;
           resp=await fetch('/pdf/preview',{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify(body)});}
       const d=await resp.json();
@@ -677,6 +690,29 @@ async function toggleMapping(){
   }catch(e){}
 }
 
+/* ---- switch "Etichette sul PDF" ----
+   Spento: nelle caselle del PDF anonimizzato resta solo il rettangolo colorato.
+   Cambia solo l'aspetto del PDF (non cosa viene rimosso): il PDF gia' generato si rifa'. */
+function renderLabels(){
+  const on=PDF_LABELS;
+  $('lblToggle').classList.toggle('off',!on);
+  $('lblToggle').setAttribute('aria-checked',String(on));
+  $('lblSw').classList.toggle('off',!on);
+  $('lblState').textContent=on?tt('lbl_on'):tt('lbl_off');
+  $('lblSub').innerHTML=on?tt('lbl_sub_on'):tt('lbl_sub_off');
+}
+async function toggleLabels(){
+  PDF_LABELS=!PDF_LABELS;
+  renderLabels();
+  toast(PDF_LABELS?tt('t_lbl_on'):tt('t_lbl_off'),PDF_LABELS);
+  OUT_DOC=null;$('pdfOutView').innerHTML='';        // il PDF censurato va rifatto
+  try{
+    await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({pdf_labels:PDF_LABELS})});
+  }catch(e){}
+  if(typeof VIEW!=='undefined'&&VIEW==='pdf')setView('pdf');
+}
+
 /* ---- tags modal: legenda + selezione dei tag da anonimizzare ---- */
 let TAGS_META={};
 async function loadTags(){
@@ -684,6 +720,7 @@ async function loadTags(){
     const d=await (await fetch('/settings')).json();
     TAGS=d.tags||[];EXCL=new Set(d.excluded_tags||[]);TAGS_META=d;TAGS_LOADED=true;
     MAPPING=d.mapping_enabled!==false;renderMapping();
+    PDF_LABELS=d.pdf_labels!==false;renderLabels();
   }catch(e){/* server vecchio o offline: si continua con il comportamento di default */}
 }
 function renderTags(){

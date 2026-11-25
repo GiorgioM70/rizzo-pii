@@ -67,8 +67,8 @@ import server_config
 # Rete REGEX + CHECKSUM: modulo a parte, senza dipendenze dal modello. I nomi
 # restano importabili da qui (`app.detect_regex`) per non rompere chi li usa.
 from detectors import (DETECTORS, SOFT_REGEX_LABELS, cf_ok,  # noqa: F401
-                       complete_time, detect_iban, detect_regex, iban_ok, luhn_ok,
-                       piva_ok)
+                       complete_time, detect_iban, detect_regex, extend_same_label,
+                       balance_parens, drop_generic_org, extend_caps_surname, fix_model_labels, iban_ok, luhn_ok, piva_ok)
 
 
 def _resource_path(rel):
@@ -332,7 +332,7 @@ TAGS = [
      "Person name (legal roles included: judge, lawyer, parties, witness)", "Mario Rossi"),
     ("AGE", "Età", "Age", "45 anni"),
     ("GENDER", "Sesso / genere", "Sex / gender", "Femmina"),
-    ("DATE", "Data di calendario", "Calendar date", "12/06/1985"),
+    ("DATE", "Data di calendario, anche scritta in lettere", "Calendar date, also written out in words", "12/06/1985"),
     ("TIME", "Ora", "Time of day", "ore 15:30"),
     ("STREET", "Via / piazza / corso", "Street / square", "Via Garibaldi"),
     ("BUILDINGNUM", "Numero civico", "Building number", "24"),
@@ -341,20 +341,20 @@ TAGS = [
     ("PROVINCE", "Sigla della provincia", "Province code", "MI"),
     ("EMAIL", "Email, PEC inclusa", "Email, certified mail included", "m.rossi@studio.it"),
     ("TELEPHONENUM", "Numero di telefono", "Phone number", "+39 333 1234567"),
-    ("CF", "Codice fiscale (checksum verificato)", "Italian tax code (checksum verified)",
+    ("CF", "Codice fiscale (✓ = checksum verificato)", "Italian tax code (✓ = checksum verified)",
      "RSSMRA85H12F205Y"),
-    ("PIVA", "Partita IVA (checksum verificato)", "VAT number (checksum verified)", "12345678903"),
+    ("PIVA", "Partita IVA (✓ = checksum verificato)", "VAT number (✓ = checksum verified)", "12345678903"),
     ("ID_DOC", "Numero di documento d'identità (carta, passaporto, patente)",
      "Identity document number (ID card, passport, driving licence)", "CA12345AB"),
-    ("IBAN", "IBAN / numero di conto (checksum verificato)",
-     "IBAN / account number (checksum verified)", "IT60X0542811101000000123456"),
-    ("CREDITCARDNUMBER", "Numero di carta di credito (Luhn verificato)",
-     "Credit card number (Luhn verified)", "4111 1111 1111 1111"),
-    ("AMOUNT", "Importo in denaro", "Money amount", "€ 12.500,00"),
+    ("IBAN", "IBAN / numero di conto (✓ = checksum verificato)",
+     "IBAN / account number (✓ = checksum verified)", "IT60X0542811101000000123456"),
+    ("CREDITCARDNUMBER", "Numero di carta di credito (✓ = Luhn verificato)",
+     "Credit card number (✓ = Luhn verified)", "4111 1111 1111 1111"),
+    ("AMOUNT", "Importo in denaro, anche in lettere", "Money amount, also written out in words", "€ 12.500,00"),
     ("TARGA", "Targa di veicolo", "Vehicle plate", "AB 123 CD"),
     ("ORG", "Ragione sociale privata: società, studio legale, banca",
      "Private organization: company, law firm, bank", "Edilnord S.r.l."),
-    ("DOCID", "Codice di un atto: ruolo generale, protocollo, repertorio, sentenza",
+    ("DOCID", "Codice di un atto o di un rapporto: ruolo generale, protocollo, repertorio, sentenza, n. pratica/contratto/cliente",
      "Document code: case number, protocol, repertoire, judgment", "1234/2024"),
     ("CATASTO", "Dati catastali: foglio, particella, subalterno",
      "Land registry data: sheet, parcel, subordinate", "Foglio 12, part. 345, sub. 6"),
@@ -375,6 +375,7 @@ TAG_NAMES = [t[0] for t in TAGS]
 _prefs = server_config.load_prefs()
 EXCLUDED_TAGS = _prefs["excluded_tags"]
 MAPPING_ENABLED = _prefs["mapping_enabled"]
+PDF_LABELS = server_config.load_pdf_labels()   # etichette sulle caselle del PDF (spento = solo rettangolo)
 _PREFS_LOCK = threading.Lock()   # protegge la lettura/scrittura ATOMICA della coppia sopra
 
 
@@ -439,6 +440,7 @@ def _merge(cands, text):
     La rete regex copre campi a forma molto specifica: per quegli span e' piu' affidabile
     del modello (evita la frammentazione di CF/IBAN/carta in piu' pezzi). Fanno eccezione
     i tag in SOFT_REGEX_LABELS, dove la forma non ha un checksum a confermarla."""
+    extend_same_label(cands)
     order = sorted(
         cands,
         key=lambda e: (1 if e["validated"] else 0,
@@ -491,7 +493,7 @@ def _merge(cands, text):
             merged[-1]["end"] = e["end"]
             continue
         merged.append(e)
-    return merged
+    return balance_parens(extend_caps_surname(merged, text), text)
 
 
 def _norm(s):
@@ -563,6 +565,9 @@ def analyze(text, excluded=None, mapping_enabled=True, session_id=None):
     model_ents, n_chunks = detect_model(text)
     # il modello taglia i minuti delle ore: la regex dell'ora completa SOLO le sue span TIME
     complete_time(model_ents, text)
+    # etichette incoerenti col valore ("12345678901234" = IBAN?) PRIMA del filtro dei tag
+    fix_model_labels(model_ents, text)
+    model_ents = drop_generic_org(model_ents, text)
     cands = model_ents + detect_regex(text)
     if excluded:
         cands = [e for e in cands if e["label"] not in excluded]
@@ -856,6 +861,8 @@ def _pdf_response(data, report, redactions, filename="documento_anonimizzato.pdf
     resp.headers["X-PII-Residual"] = str(len(report.get("residual", [])))
     resp.headers["X-PII-Skipped"] = str(len(report.get("skipped", [])))
     resp.headers["X-PII-Notfound"] = str(len(report.get("not_found", [])))
+    # firme non testuali (immagini, tratti, timbri, campi /Sig) tolte dal PDF
+    resp.headers["X-PII-Signatures"] = str(report.get("signatures", 0))
     # pagine scansionate (immagini senza testo): restano come sono, PII comprese
     resp.headers["X-PII-NoText-Pages"] = ",".join(map(str, report.get("no_text_pages", [])))
     # pagine scansionate lette con l'OCR e coperte coi suoi riquadri; quelle la cui
@@ -904,11 +911,14 @@ def _build_anonymized_pdf():
             raise _ReqError(f"Impossibile leggere il file: {e}")
         raw_excl = request.form.get("exclude_tags")
         raw_sid = request.form.get("session_id")
+        raw_lbl = request.form.get("pdf_labels")
     else:
         payload = request.get_json(silent=True) or {}
         name, data, text = "", b"", payload.get("text", "")
         raw_excl = payload.get("exclude_tags")
         raw_sid = payload.get("session_id")
+        raw_lbl = payload.get("pdf_labels")
+    labels = server_config.parse_bool(raw_lbl, PDF_LABELS)   # campo nella richiesta > preferenza
     if raw_sid is not None and not valid_session_id(raw_sid):
         raise _ReqError("session_id non valido.")
 
@@ -933,7 +943,7 @@ def _build_anonymized_pdf():
         try:
             out, report = pdf_export.redact_pdf(
                 data, res["mapping"], ocr_pages=ocr_res.pages,
-                ocr_verify=_ocr_reread if ocr_res.pages else None)
+                ocr_verify=_ocr_reread if ocr_res.pages else None, labels=labels)
         except pdf_export.PdfError as e:
             raise _ReqError(str(e))
         report["no_text_pages"] = ocr_res.warn_pages()
@@ -984,6 +994,7 @@ def pdf_preview_route():
         "residual": len(report.get("residual", [])),
         "skipped": len(report.get("skipped", [])),
         "not_found": len(report.get("not_found", [])),
+        "signatures": report.get("signatures", 0),
         "pages_no_text": report.get("no_text_pages", []),
         "pages_ocr": report.get("ocr_pages", []),
         "ocr_unverified": report.get("ocr_unverified", []),
@@ -1065,16 +1076,23 @@ def settings_get():
         "tags": [{"tag": t, "it": it, "en": en, "example": ex} for t, it, en, ex in TAGS],
         "excluded_tags": excl,
         "mapping_enabled": mapping,
+        "pdf_labels": PDF_LABELS,
         "config_path": str(server_config.prefs_path()),
-        "env_override": "PII_EXCLUDE_TAGS" in os.environ or "PII_MAPPING" in os.environ,
+        "env_override": "PII_EXCLUDE_TAGS" in os.environ or "PII_MAPPING" in os.environ
+        or "PII_PDF_LABELS" in os.environ,
     })
 
 
 @app.route("/settings", methods=["POST"])
 @app.route("/tags", methods=["POST"])
 def settings_post():
-    global EXCLUDED_TAGS, MAPPING_ENABLED
+    global EXCLUDED_TAGS, MAPPING_ENABLED, PDF_LABELS
     data = request.get_json(silent=True) or {}
+    if "pdf_labels" in data:
+        with _PREFS_LOCK:
+            PDF_LABELS = server_config.save_pdf_labels(data["pdf_labels"])
+        if "excluded_tags" not in data and "mapping_enabled" not in data:
+            return jsonify({"ok": True, "pdf_labels": PDF_LABELS})
     tags = None
     if "excluded_tags" in data:
         tags = server_config.parse_tag_list(data["excluded_tags"])
@@ -1089,7 +1107,7 @@ def settings_post():
         EXCLUDED_TAGS = saved["excluded_tags"]
         MAPPING_ENABLED = saved["mapping_enabled"]
     return jsonify({"ok": True, "excluded_tags": EXCLUDED_TAGS,
-                    "mapping_enabled": MAPPING_ENABLED})
+                    "mapping_enabled": MAPPING_ENABLED, "pdf_labels": PDF_LABELS})
 
 
 # --------------------------------------------------------------------------- #

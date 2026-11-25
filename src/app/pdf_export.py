@@ -30,6 +30,7 @@ che apply_redactions() da solo NON tocca):
   - contenuto delle ANNOTAZIONI (commenti, FreeText, note);
   - valore dei CAMPI MODULO (widget AcroForm);
   - titoli dei SEGNALIBRI (outline/TOC);
+  - FIRME che non sono testo (immagini, tratti a mano libera, timbri, campi /Sig);
   - ALLEGATI incorporati (embedded files), rimossi in blocco.
 
 Rete di sicurezza finale: `report["residual"]` elenca i placeholder il cui valore
@@ -117,21 +118,16 @@ def _covered(rect, taken, thr=0.85):
 # --------------------------------------------------------------------------- #
 def _page_char_index(page):
     """(testo, [bbox per carattere]) dalla pagina: ogni carattere del layer
-    testuale con il suo rettangolo (None per i newline di fine riga)."""
-    raw = page.get_text("rawdict")
+    testuale con il suo rettangolo (None per i newline di fine riga e per gli
+    spazi ricostruiti). Le lettere spaziate sono riunite in parole, come nel testo
+    che ha visto il modello (pdf_text.raw_lines)."""
     chars, boxes = [], []
-    for block in raw.get("blocks", []):
-        if block.get("type") != 0:          # solo blocchi di testo
-            continue
-        for line in block.get("lines", []):
-            for span in line.get("spans", []):
-                for ch in span.get("chars", []):
-                    c = ch.get("c") or ""
-                    for cc in c:            # ligature -> piu' caratteri, stesso bbox
-                        chars.append(cc)
-                        boxes.append(fitz.Rect(ch["bbox"]))
-            chars.append("\n")
-            boxes.append(None)
+    for line in pdf_text.raw_lines(page) or []:
+        for c, bb in line:
+            chars.append(c)
+            boxes.append(fitz.Rect(bb) if bb is not None else None)
+        chars.append("\n")
+        boxes.append(None)
     return "".join(chars), boxes
 
 
@@ -306,6 +302,200 @@ def _scrub_toc(doc, patterns):
             doc.set_toc(new_toc)
         except Exception:
             return 0
+    return done
+
+
+# --------------------------------------------------------------------------- #
+# FIRME: tutto cio' che firma ma non e' testo
+#
+# Il nome sotto "F.to" lo trova il modello come ogni altro nome; la FIRMA vera no:
+# e' un'immagine raster (scansione ritagliata, "Fill & Sign"), un tratto a mano
+# libera (annotazione Ink), un timbro (Stamp), un campo firma digitale (/Sig: nome del
+# firmatario nell'aspetto, nel dizionario /V e nel certificato) o un tracciato
+# vettoriale di curve. Nessuno e' nel layer testuale, quindi `apply_redactions()` su
+# un valore non li tocca, e `_verify_residuals` non puo' vederli.
+#
+# Per questo si rimuovono PER FORMA, non per valore:
+#   - campi di firma, annotazioni Ink/Stamp: via sempre (+ casella "[FIRMA]");
+#   - immagini piccole e curve a mano libera: solo se stanno vicino a una dicitura
+#     BREVE di firma ("Firma:", "F.to", "Il Venditore"...) o, per le immagini, sopra un
+#     nome gia' redatto. Senza questo vincolo sparirebbero i loghi o i pulsanti di un
+#     modulo accanto a "Il sottoscritto Mario Rossi dichiara che...";
+#   - i dati della firma DIGITALE (/V col nome, /DSS, /Perms) a livello di documento:
+#     vedi _scrub_signature_data.
+# Due fasi per pagina: i tracciati vettoriali escono solo con graphics=TOUCHED, che e'
+# un parametro dell'INTERA pagina e si porterebbe via i bordi di tabella toccati dalle
+# caselle dei nomi: si applicano da soli, per primi (`_redact_signature_shapes`). Le
+# immagini vengono dopo i nomi (`_redact_signature_images`), cosi' "sopra un nome
+# redatto" ha un significato.
+# Limite: una firma dentro una pagina SCANSIONATA e' un pixel fra gli altri (l'OCR
+# non legge la calligrafia): non c'e' modo affidabile di distinguerla; l'UI lo dice.
+# --------------------------------------------------------------------------- #
+SIG_LABEL = "[FIRMA]"
+_SIG_CUES = re.compile(
+    r"\b(?:firma\w*|f[./]\s?to|sottoscritt\w*|in\s+fede|timbro|signature|signed|"
+    r"sign\s+here|il\s+dichiarante|il\s+venditore|il\s+compratore|il\s+locatore|"
+    r"il\s+conduttore|il\s+committente|l['\u2019]appaltatore|il\s+cedente|"
+    r"il\s+cessionario|il\s+mandante|il\s+mandatario|il\s+notaio|per\s+accettazione|"
+    r"letto\s+confermato)\b", re.I)
+SIG_CUE_MAX_CHARS = 40     # una dicitura di firma e' una riga corta, non prosa
+SIG_NEAR_X = 40.0          # pt: quanto una firma puo' stare lontana dalla dicitura
+SIG_NEAR_Y = 70.0
+SIG_MAX_AREA = 0.15        # frazione di pagina: oltre e' una scansione/sfondo, non una firma
+SIG_MAX_W = 0.5
+SIG_MAX_H = 0.25
+SIG_MIN_CURVES = 5         # un cerchio (pulsante radio) ne ha 4
+
+
+def _cue_rects(page):
+    """Riquadri delle righe BREVI che contengono una dicitura di firma."""
+    out = []
+    try:
+        blocks = page.get_text("dict")["blocks"]
+    except Exception:
+        return out
+    for b in blocks:
+        for ln in b.get("lines", []):
+            txt = "".join(sp.get("text", "") for sp in ln.get("spans", [])).strip()
+            if len(txt) <= SIG_CUE_MAX_CHARS and _SIG_CUES.search(txt):
+                out.append(fitz.Rect(ln["bbox"]))
+    return out
+
+
+def _near(rect, cues, taken=()):
+    r = fitz.Rect(rect)
+    grown = fitz.Rect(r.x0 - SIG_NEAR_X, r.y0 - SIG_NEAR_Y, r.x1 + SIG_NEAR_X, r.y1 + SIG_NEAR_Y)
+    return (any(grown.intersects(c) for c in cues)
+            or any(r.intersects(t) for t in taken))
+
+
+def _sig_box(page, rect, taken, fill, text_color, labels=True):
+    r = fitz.Rect(rect) + (-1, -1, 1, 1)
+    r &= page.rect
+    if r.is_empty or r.width < 2 or r.height < 2:
+        return 0
+    fs = _fit_fontsize(SIG_LABEL, r) if labels else 0
+    _add_redact_annot(page, r, SIG_LABEL if fs else None, fs or 6, fill, text_color)
+    taken.append(fitz.Rect(r))
+    return 1
+
+
+def _redact_signature_shapes(page, taken, fill, text_color, labels=True):
+    """Fase 1 (prima dei nomi): campi di firma, Ink, Stamp, tracciati a mano libera.
+    Applica subito le redazioni; ritorna quante firme ha tolto."""
+    n = 0
+    pr = page.rect
+    # 1) campi firma digitale: si cancellano (la firma e' comunque invalidata da
+    #    qualunque modifica) e con loro l'aspetto che mostra il nome del firmatario
+    try:
+        widgets = [w for w in page.widgets()
+                   if w.field_type == fitz.PDF_WIDGET_TYPE_SIGNATURE]
+    except Exception:
+        widgets = []
+    for w in widgets:
+        rect = fitz.Rect(w.rect)
+        try:
+            page.delete_widget(w)
+        except Exception:
+            continue
+        n += _sig_box(page, rect, taken, fill, text_color, labels)
+    # 2) tratti a mano libera e timbri
+    try:
+        annots = [a for a in page.annots()
+                  if a.type[0] in (fitz.PDF_ANNOT_INK, fitz.PDF_ANNOT_STAMP)]
+    except Exception:
+        annots = []
+    for a in annots:
+        rect = fitz.Rect(a.rect)
+        try:
+            page.delete_annot(a)
+        except Exception:
+            continue
+        n += _sig_box(page, rect, taken, fill, text_color, labels)
+    # 3) tracciati vettoriali a mano libera: molte curve, quasi nessun segmento dritto,
+    #    non un'ellisse chiusa (pulsante radio, timbro tondo vuoto)
+    cues = _cue_rects(page)
+    vector = False
+    try:
+        drawings = page.get_drawings() if cues else []
+    except Exception:
+        drawings = []
+    for d in drawings:
+        items = d.get("items", [])
+        curves = sum(1 for it in items if it[0] == "c")
+        lines = sum(1 for it in items if it[0] in ("l", "re", "qu"))
+        r = fitz.Rect(d["rect"])
+        if (curves < SIG_MIN_CURVES or lines * 2 > curves or r.is_empty
+                or r.width > SIG_MAX_W * pr.width or r.height > SIG_MAX_H * pr.height):
+            continue
+        if d.get("closePath") and r.height and 0.6 <= r.width / r.height <= 1.7:
+            continue
+        if _near(r, cues):
+            n += _sig_box(page, r, taken, fill, text_color, labels)
+            vector = True
+    if n:
+        # un tracciato non viene rimosso da graphics="se coperto" (le curve escono dal
+        # riquadro coi punti di controllo): serve "se toccato". In questo momento le sole
+        # caselle sulla pagina sono quelle delle firme: i nomi si redigono dopo.
+        page.apply_redactions(
+            graphics=(getattr(fitz, "PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED", 2)
+                      if vector else 1))
+    return n
+
+
+def _redact_signature_images(page, taken, fill, text_color, labels=True):
+    """Fase 2 (dopo i nomi, prima di apply_redactions): immagini piccole vicino a una
+    dicitura di firma o sopra un nome appena redatto. Le caselle le applica il chiamante."""
+    n = 0
+    pr = page.rect
+    page_area = max(pr.width * pr.height, 1.0)
+    cues = _cue_rects(page)
+    try:
+        images = page.get_image_info()
+    except Exception:
+        images = []
+    for im in images:
+        r = fitz.Rect(im["bbox"])
+        if (r.is_empty or r.width * r.height > SIG_MAX_AREA * page_area
+                or r.width > SIG_MAX_W * pr.width or r.height > SIG_MAX_H * pr.height):
+            continue
+        if _near(r, cues, taken):
+            n += _sig_box(page, r, taken, fill, text_color, labels)
+    return n
+
+
+def _scrub_signature_data(doc):
+    """Dati della firma DIGITALE che sopravvivono alla cancellazione del widget: il
+    dizionario /V (nome, motivo, luogo, contatto, certificato in /Contents, spesso col
+    codice fiscale del firmatario), il campo padre che lo regge, /DSS (certificati e
+    OCSP) e /Perms. Ritorna quanti dizionari di firma ha svuotato."""
+    done = 0
+    try:
+        cat = doc.pdf_catalog()
+        for k in ("DSS", "Perms"):
+            if doc.xref_get_key(cat, k)[0] != "null":
+                doc.xref_set_key(cat, k, "null")
+    except Exception:
+        pass
+    try:
+        n_x = doc.xref_length()
+    except Exception:
+        return 0
+    for x in range(1, n_x):
+        try:
+            typ = doc.xref_get_key(x, "Type")[1]
+            if typ in ("/XRef", "/ObjStm"):
+                continue
+            ft = doc.xref_get_key(x, "FT")[1]
+            if ft == "/Sig":                       # campo (padre o widget): via il valore
+                for k in ("V", "Lock", "SV"):
+                    if doc.xref_get_key(x, k)[0] != "null":
+                        doc.xref_set_key(x, k, "null")
+            if typ == "/Sig" or doc.xref_get_key(x, "ByteRange")[0] != "null":
+                doc.update_object(x, "<<>>")       # il dizionario di firma in se'
+                done += 1
+        except Exception:
+            continue
     return done
 
 
@@ -550,7 +740,7 @@ def _flatten_to_image(page):
 
 
 def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
-               ocr_pages=None, ocr_verify=None):
+               ocr_pages=None, ocr_verify=None, labels=True):
     """PDF originale -> PDF con redazione vera + placeholder al posto delle PII.
 
     mapping: {"[FULLNAME_1]": "Mario Rossi", ...} (il dizionario di analyze()).
@@ -561,6 +751,9 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
         dell'immagine sotto (images=PDF_REDACT_IMAGE_PIXELS, il default) e la
         casella viola ci va sopra. Senza questo, nel PDF in uscita la scansione
         resterebbe com'era.
+    labels: True = su ogni casella il suo segnaposto ([DATE_1], [FIRMA]...); False =
+        solo il rettangolo colorato, senza testo (impostazione "etichette sul PDF").
+        Non cambia cosa viene rimosso, solo cosa si vede al suo posto.
     ocr_verify: funzione (pdf_bytes_in_uscita, [indici]) -> {indice: OcrPage}
         che RILEGGE con l'OCR le pagine redatte. Un valore ancora leggibile finisce
         in "residual" come per il testo; una pagina che non si riesce a rileggere
@@ -579,6 +772,9 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
                           trasformate in immagine prima di coprire,
         "annots":         sostituzioni nelle annotazioni,
         "widgets":        sostituzioni nei campi modulo,
+        "signatures":     firme rimosse (campi /Sig, Ink, timbri, immagini e tratti
+                          vicino alle diciture di firma): vedi _redact_signature_*,
+        "signature_data": dizionari di firma digitale (/V, /Sig) svuotati,
         "toc":            sostituzioni nei segnalibri,
         "embedded":       allegati rimossi,
     }
@@ -615,7 +811,7 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
 
     by_ph = {ph: 0 for ph, _, _ in usable}
     patterns = [(pat, ph) for ph, _, pat in usable]   # per annot/widget/TOC
-    total = n_annots = n_widgets = 0
+    total = n_annots = n_widgets = n_sig = 0
 
     ocr_pages = {i: p for i, p in (ocr_pages or {}).items()
                  if 0 <= i < doc.page_count}
@@ -633,7 +829,7 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
                 for r in rects:
                     if _covered(r, taken):
                         continue
-                    fs = 0 if labeled else _fit_fontsize(ph, r)
+                    fs = 0 if (labeled or not labels) else _fit_fontsize(ph, r)
                     _add_redact_annot(page, r, ph if fs else None,
                                       fs or 6, fill, text_color)
                     taken.append(fitz.Rect(r))
@@ -660,6 +856,11 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
             if flat is not None:
                 page = flat
                 flattened.append(pno + 1)
+        # 0c) firme (immagini, tratti, timbri, campi /Sig): per forma, non per valore.
+        #     PRIMA delle caselle dei nomi: i tracciati vettoriali si tolgono solo con
+        #     graphics=TOUCHED, che altrimenti si porterebbe via anche i bordi di tabella
+        #     toccati dalle altre caselle della pagina.
+        n_sig += _redact_signature_shapes(page, taken, fill, text_color, labels)
         # 1) layer testuale (anche sulle scansioni: il testo nascosto dello
         #    scanner va tolto dove contiene i valori)
         text, boxes = _page_char_index(page)
@@ -672,12 +873,15 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
             except Exception:
                 ink = None
             total += _redact_text(page, o_text, o_boxes, taken, pad=True, ink=ink)
+        # 3) immagini-firma: dopo i nomi, cosi' "sopra un nome redatto" vale qualcosa
+        n_sig += _redact_signature_images(page, taken, fill, text_color, labels)
         if taken:
             page.apply_redactions()   # rimozione VERA dal content stream
         # dopo le redazioni: annotazioni e campi modulo non sono content stream
         n_annots += _scrub_annots(page, patterns)
         n_widgets += _scrub_widgets(page, patterns)
 
+    n_sigdata = _scrub_signature_data(doc)
     n_toc = _scrub_toc(doc, patterns)
     n_emb = _strip_embedded(doc)
     _scrub_metadata(doc)
@@ -702,6 +906,8 @@ def redact_pdf(pdf_bytes, mapping, fill=REDACT_FILL, text_color=REDACT_TEXT,
         "ocr_unverified": unverified,
         "annots": n_annots,
         "widgets": n_widgets,
+        "signatures": n_sig,
+        "signature_data": n_sigdata,
         "toc": n_toc,
         "embedded": n_emb,
     }
