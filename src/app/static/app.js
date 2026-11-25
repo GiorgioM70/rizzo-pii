@@ -80,6 +80,7 @@ const T = {
   t_no_text:p=>"ATTENZIONE: "+(p.length===1?"la pagina "+p[0]+" non ha":"le pagine "+p.join(", ")+" non hanno")+" testo leggibile (scansione?) e qui non c'e' l'OCR: le PII che contengono restano visibili, anche nel PDF anonimizzato.",
   t_ocr:p=>(p.length===1?"Pagina "+p[0]+" letta":"Pagine "+p.join(", ")+" lette")+" con l'OCR (scansione): il riconoscimento puo' sbagliare, controlla il risultato prima di condividerlo.",
   t_ocr_unverified:p=>"ATTENZIONE: "+(p.length===1?"sulla pagina "+p[0]:"sulle pagine "+p.join(", "))+" (scansione) non e' stato possibile ricontrollare con l'OCR che le PII siano coperte: verifica il PDF a occhio prima di condividerlo.",
+  t_sig:n=>n+(n===1?" firma rimossa":" firme rimosse")+" dal PDF (immagini, tratti, timbri, campi firma). Le firme dentro pagine scansionate non si riconoscono: controllale a occhio.",
   t_pdf_warn:(r,s)=>"PDF scaricato · ATTENZIONE: "+(r+s)+" valori sono rimasti in chiaro"
     +" ("+r+" non redatti, "+s+" troppo corti per essere cercati): controlla il file"
     +" prima di condividerlo",
@@ -149,6 +150,7 @@ const T = {
   t_no_text:p=>"WARNING: "+(p.length===1?"page "+p[0]+" has":"pages "+p.join(", ")+" have")+" no readable text (scanned?) and OCR is not available here: any PII on them stays visible, in the anonymized PDF too.",
   t_ocr:p=>(p.length===1?"Page "+p[0]:"Pages "+p.join(", "))+" read with OCR (scanned): recognition can make mistakes, check the result before sharing it.",
   t_ocr_unverified:p=>"WARNING: on "+(p.length===1?"page "+p[0]:"pages "+p.join(", "))+" (scanned) OCR could not re-check that the PII are covered: inspect the PDF before sharing it.",
+  t_sig:n=>n+(n===1?" signature":" signatures")+" removed from the PDF (images, ink, stamps, signature fields). Signatures inside scanned pages cannot be recognised: check them by eye.",
   t_pdf_warn:(r,s)=>"PDF downloaded · WARNING: "+(r+s)+" values were left in clear"
     +" ("+r+" not redacted, "+s+" too short to be searched safely): check the file"
     +" before sharing it",
@@ -243,6 +245,7 @@ function warnNoText(d){
   const p=(d&&d.pages_no_text)||[], u=(d&&d.ocr_unverified)||[], o=(d&&d.pages_ocr)||[];
   if(p.length){toast(T[L].t_no_text(p),false,12000);return true;}
   if(u.length){toast(T[L].t_ocr_unverified(u),false,12000);return true;}
+  if(d&&d.signatures>0){toast(T[L].t_sig(d.signatures),true,9000);return true;}
   if(o.length){toast(T[L].t_ocr(o),true,7000);return true;}
   return false;}
 function toast(msg,ok=true,ms=1800){const t=$('toast');t.textContent=msg;t.className='show'+(ok?' ok':'');

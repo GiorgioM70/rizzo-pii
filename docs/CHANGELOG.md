@@ -5,6 +5,51 @@ Le voci più recenti in alto. (Codice: `src/training/train_pii.py` salvo diverso
 
 ---
 
+## 2026-11-25 — Firme, etichette fuorvianti, numeri e date in lettere (`words_it.py`, `detectors.py`, `pdf_export.py`)
+
+Tre segnalazioni, riprodotte una per una col modello v1.5.0 vero prima di toccare il codice.
+
+**Date e importi in lettere.** "il quindici maggio millenovecentoottanta" diventava
+"il quindici [DATE_1] millenovecentoottanta" (il modello etichettava il solo mese), "dodici giugno
+duemilaventitre" e "euro quindicimila/00" restavano interi, "3 mila euro" lasciava "euro" fuori. Nuovo
+`words_it.py`: parser dei cardinali italiani (composti, forma spaziata, grammatica verificata) + ancore.
+Una parola-numero da sola non si tocca ("tre rate", "sei mesi", "venti giorni"): serve il mese, l'euro o
+la forma `/00`. Coperti anche `1/3/24` (il modello vedeva `3/24`, restava `1/`), codici dopo "pratica/
+contratto/cliente/polizza/matricola/n." (≥ 6 cifre) e numeri nudi di ≥ 12 cifre come `DOCID`, le cifre
+dette una a una ("tre tre tre uno...") e il nome dopo `F.to`/`firmato da`/`in fede`.
+
+**Causa comune dei pezzi lasciati in chiaro**: `_merge` teneva una sola di due span sovrapposte (il
+modello vince sulle regex `DATE`, che sono "soft"). Ora `extend_same_label()` porta entrambe all'unione se
+sono dello stesso tipo e una e' `union`; `balance_parens()` non lascia `[AMOUNT_1])`.
+Non e' `union` la data numerica con orario: il modello separa data e `TIME`, unirle lasciava `[DATE_1]:10`.
+
+**Etichette fuorvianti.** `fix_model_labels()`: `12345678901234` non e' un `[IBAN_1]` ne' `123456`
+un `[BUILDINGNUM_1]`. Si cambia l'etichetta (→ `DOCID`), l'entita' resta mascherata. Gira prima del
+filtro dei tag esclusi. La legenda diceva "(checksum verificato)" anche per i match del modello, che non
+hanno il ✓: ora "✓ = checksum verificato". DATE/AMOUNT/DOCID dicono che includono le forme in lettere.
+
+**Firme.** Nel PDF il nome sotto "F.to" era gia' coperto; la firma no: immagine raster, tratto
+Ink, timbro, campo `/Sig`, tracciato vettoriale. Non sono nel layer testuale, quindi la redazione per
+valore non le toccava. Si tolgono per forma: campi `/Sig`, Ink e Stamp sempre; immagini piccole e curve a
+mano libera (≥ 5, non un'ellisse chiusa) solo vicino a una dicitura **breve** di firma (≤ 40 caratteri) o,
+per le immagini, sopra un nome redatto: un logo accanto a "Il sottoscritto Mario Rossi dichiara..." o un
+pulsante radio restano. Casella `[FIRMA]`, `signatures` nel report, header `X-PII-Signatures`, toast.
+**Firma digitale vera**: cancellare il widget lasciava il nome del firmatario (`/V /Name`), il
+certificato col codice fiscale (`/Contents`), `/DSS`, `/Perms` e il campo padre (verificato sul file:
+sopravvivevano anche dopo `garbage=3`). `_scrub_signature_data` li azzera. I tracciati vettoriali
+richiedono `graphics=TOUCHED`, che vale per tutta la pagina: due fasi, forme prima e immagini dopo i nomi.
+**Limite noto**: la firma a mano dentro una pagina scansionata non si distingue (Vision non legge la
+calligrafia); la UI lo dice. Il firmatario dopo `F.to` ignora le didascalie dei moduli (`Firma Cliente`).
+
+**Prestazioni.** La prima versione di `extend_same_label` era quadratica: 50 s su 20.000 righe di chat con
+una data ciascuna (la trappola che `_merge` aveva gia' risolto con bisect). Ora un passaggio per tipo,
+0,02 s sugli stessi dati. `detect_regex` passa da 0,5 a 1,4 s su 1,7 MB (parole in lettere): irrilevante
+rispetto all'inferenza.
+
+Test (nuovi, senza modello): `tests/test_numeri_date_lettere.py`, `tests/test_etichette_modello.py`,
+`tests/test_pdf_firme.py` (39 in tutto). Suite 177 → 216 OK. Verifica end-to-end su `/pdf/preview` con il modello vero:
+5 firme tolte, 0 residui, date/importi in lettere e codice pratica coperti.
+
 ## 2026-11-10 — L'importo senza separatore di migliaia lasciava i centesimi in chiaro (`detectors.py`)
 
 `€ 12.500,00` era coperto per intero, `euro 1500,00` no: la regex si fermava a tre

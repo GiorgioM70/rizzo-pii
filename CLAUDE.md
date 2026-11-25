@@ -62,6 +62,10 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
 - `test_pii.py` — inferenza CLI sul modello salvato (entità + testo anonimizzato). Risolve in automatico
   l'**ultima** versione `rizzo-pii-0.3B-v*` (fallback al vecchio non versionato → legacy; override `PII_MODEL_DIR`).
 
+**Ambiente di test sul Mac:** `~/Work/rizzo-pii-venv/venv` (Python 3.11 con `--system-site-packages` per torch,
++ `pymupdf flask pytest`). Suite: `venv/bin/python -m unittest discover -s tests` (pytest crasha sulla
+cattura a chiusura: usare unittest). Baseline: 216 test OK. Le prove sul modello vero: `app.analyze(testo)`.
+
 **Utility / ispezione (read-only) — `src/inspect/`:**
 - `validate_checksums.py` — ricalcola i checksum CF/IBAN/PIVA; **blueprint della rete regex+checksum**
   da affiancare al modello in produzione.
@@ -193,6 +197,56 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   non cercabili senza devastare il documento. Se in tutto il PDF non si trova **nessuna** occorrenza
   → `422`, non un PDF "anonimizzato" che non lo è (caso tipico: scansione senza OCR, cioè fuori da
   macOS → punti 2-4 della issue). Nessuna dipendenza dal modello: `pdf_export.py` è testabile in isolamento.
+- **Numeri e date in lettere, codici lunghi, firmatari** — `words_it.py` (solo stringhe, niente
+  torch/fitz) + `detectors.detect_extras()`. Il modello etichettava il solo "maggio" di "quindici
+  maggio millenovecentoottanta" e non vedeva "quindicimila/00". Parser dei cardinali italiani
+  (composti incollati `duemilaventitre`, `millenovecentoottanta`, forma spaziata, grammatica verificata:
+  "cento due due" non e' un numero). **Una parola-numero da sola non e' mai PII** ("tre rate", "sei
+  mesi"): serve l'**ancora** — DATE = giorno + mese (+ anno), mese + anno, "anno/nel <anno in lettere>";
+  AMOUNT = numero accanto a euro/EUR/€, forma legale `/00`, `3 mila euro`, `2,5 milioni di euro`,
+  `quindicimilaeuro`, "euro e N centesimi" (un solo importo); cifre dette una a una (>= 7) = telefono
+  (con contesto) o DOCID. Anche: `DATE` con anno a 2 cifre (`1/3/24`: il modello vedeva `3/24` e
+  lasciava `1/` in chiaro), **DOCID** per codici numerici dopo la loro parola (`pratica`, `contratto`,
+  `cliente`, `polizza`, `matricola`, `n.`... ≥ 6 cifre, solo le cifre nello span; score 0.85 cosi' telefono/
+  IBAN vincono) e per numeri nudi di ≥ 12 cifre; **firmatario** dopo `F.to`/`firmato da`/`firma:`/`in fede`
+  (`detect_signers`, FULLNAME soft: rete per i nomi che il modello non conosce; lista `_SIG_STOP` per le
+  didascalie dei moduli — `Firma Cliente`, `Firma Contraente` non sono nomi — e `firma` senza due punti
+  vuole ≥ 2 parole).
+  **`extend_same_label()` (in `_merge`)**: due span SOVRAPPOSTE dello stesso tipo, di cui una marcata
+  `union` (AMOUNT, `DATE` a 2 cifre, i regex in lettere), diventano l'unione. Senza, la fusione greedy
+  teneva una sola e il pezzo dell'altra restava in chiaro (`"[AMOUNT_2] euro"`). `DATE` numerica
+  col suo orario NON e' `union`: il modello separa data e `TIME`, e unirle lasciava `[DATE_1]:10`.
+  `balance_parens()` chiude la parentesi lasciata fuori dalla span (`[AMOUNT_1])`).
+  **Prestazioni**: `extend_same_label` e' un'unica passata per tipo (O(n log n)); la prima versione,
+  quadratica, impiegava 50 s su 20.000 righe di chat (la stessa trappola che `_merge` ha gia' evitato con
+  bisect). `detect_regex` costa ~2,5x di prima (1,4 s su 1,7 MB) per `words_it`: irrilevante vs l'inferenza.
+- **Etichette del modello coerenti col valore** — `detectors.fix_model_labels()` (prima del filtro dei
+  tag esclusi): il modello dava `IBAN` a `12345678901234` e `BUILDINGNUM` a `123456`. Si **cambia
+  l'etichetta, non si scarta** (errore per eccesso = l'unico accettabile): `IBAN`/`PIVA`/`CREDITCARDNUMBER`
+  senza checksum, senza la forma e senza il contesto giusto (`conto`, `p.iva`, `carta`...) → `DOCID`;
+  `BUILDINGNUM` con > 5 cifre o dopo "matricola/pratica/contratto..." → `DOCID`; `ID_DOC` dopo
+  "cliente/contratto/pratica..." → `DOCID`. Un `conto 12345678` resta `IBAN` (CONTO→IBAN in tassonomia).
+  Il ✓ nella legenda `TAGS` vale solo per i match col checksum: il testo ora lo dice ("✓ = checksum verificato").
+- **Firme nel PDF** (`pdf_export._redact_signature_shapes` / `_redact_signature_images` /
+  `_scrub_signature_data`). Il nome sotto "F.to" lo trova il modello; la firma vera no, perche' non e'
+  testo. Si tolgono PER FORMA: campi `/Sig`, annotazioni **Ink** e **Stamp** (sempre); tracciati a mano
+  libera (≥ 5 curve, pochi segmenti dritti, non un'ellisse chiusa: i pulsanti radio restano) e
+  **immagini** piccole (≤ 15% pagina) solo se vicini a una dicitura di firma **breve** (riga ≤ 40
+  caratteri: `Firma:`, `F.to`, `Il Venditore`; una frase come "Il sottoscritto Mario Rossi dichiara..."
+  non conta, altrimenti sparisce il logo d'intestazione) e, per le immagini, anche se coprono un nome
+  appena redatto. Al loro posto una casella `[FIRMA]` (nessun nuovo tag: non e' una PII del testo).
+  **Firma digitale (PAdES)**: cancellare il widget non basta — il nome sta in `/V /Name`, il certificato
+  (col codice fiscale `TINIT-...`) in `/Contents`, e restano `/DSS`, `/Perms` e, se il campo e' un
+  "figlio", il padre in `/Fields` col suo `/V`. `_scrub_signature_data` azzera `/V`, `/Lock`, `/SV` di
+  ogni campo `/FT /Sig`, svuota i dizionari `/Type /Sig` o con `/ByteRange` e toglie `/DSS` e `/Perms`
+  (verificato: senza, nome e codice fiscale sopravvivono nel file anche dopo `garbage=3`).
+  Report: `signatures`, `signature_data`; header `X-PII-Signatures`; campo `signatures` di `/pdf/preview`;
+  toast nella UI. **Trappola**: i tracciati vettoriali escono solo con
+  `apply_redactions(graphics=REMOVE_IF_TOUCHED)` (con "se coperto" restano sotto la casella) e quel
+  parametro vale per tutta la pagina → due fasi: forme e tracciati si applicano da soli, per primi;
+  le immagini vengono dopo i nomi (cosi' i bordi di tabella toccati dalle caselle dei nomi restano).
+  **Limite noto**: la firma a mano dentro una pagina **scansionata** e' un pixel fra gli altri (Vision
+  non legge la calligrafia): non si distingue in modo affidabile, la UI lo dice.
 - `serve.py` — entry **headless** (solo Flask, niente browser): è il backend dell'app Tauri; log su
   `backend.log` nella **cartella dati** di `server_config.config_dir()` (la stessa di `config.json`,
   mai nella home; anche `tauri.log` di lib.rs). Pre-check porta + `sys.exit(76)` se occupata.

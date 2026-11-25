@@ -67,8 +67,8 @@ import server_config
 # Rete REGEX + CHECKSUM: modulo a parte, senza dipendenze dal modello. I nomi
 # restano importabili da qui (`app.detect_regex`) per non rompere chi li usa.
 from detectors import (DETECTORS, SOFT_REGEX_LABELS, cf_ok,  # noqa: F401
-                       complete_time, detect_iban, detect_regex, iban_ok, luhn_ok,
-                       piva_ok)
+                       complete_time, detect_iban, detect_regex, extend_same_label,
+                       balance_parens, fix_model_labels, iban_ok, luhn_ok, piva_ok)
 
 
 def _resource_path(rel):
@@ -332,7 +332,7 @@ TAGS = [
      "Person name (legal roles included: judge, lawyer, parties, witness)", "Mario Rossi"),
     ("AGE", "Età", "Age", "45 anni"),
     ("GENDER", "Sesso / genere", "Sex / gender", "Femmina"),
-    ("DATE", "Data di calendario", "Calendar date", "12/06/1985"),
+    ("DATE", "Data di calendario, anche scritta in lettere", "Calendar date, also written out in words", "12/06/1985"),
     ("TIME", "Ora", "Time of day", "ore 15:30"),
     ("STREET", "Via / piazza / corso", "Street / square", "Via Garibaldi"),
     ("BUILDINGNUM", "Numero civico", "Building number", "24"),
@@ -341,20 +341,20 @@ TAGS = [
     ("PROVINCE", "Sigla della provincia", "Province code", "MI"),
     ("EMAIL", "Email, PEC inclusa", "Email, certified mail included", "m.rossi@studio.it"),
     ("TELEPHONENUM", "Numero di telefono", "Phone number", "+39 333 1234567"),
-    ("CF", "Codice fiscale (checksum verificato)", "Italian tax code (checksum verified)",
+    ("CF", "Codice fiscale (✓ = checksum verificato)", "Italian tax code (✓ = checksum verified)",
      "RSSMRA85H12F205Y"),
-    ("PIVA", "Partita IVA (checksum verificato)", "VAT number (checksum verified)", "12345678903"),
+    ("PIVA", "Partita IVA (✓ = checksum verificato)", "VAT number (✓ = checksum verified)", "12345678903"),
     ("ID_DOC", "Numero di documento d'identità (carta, passaporto, patente)",
      "Identity document number (ID card, passport, driving licence)", "CA12345AB"),
-    ("IBAN", "IBAN / numero di conto (checksum verificato)",
-     "IBAN / account number (checksum verified)", "IT60X0542811101000000123456"),
-    ("CREDITCARDNUMBER", "Numero di carta di credito (Luhn verificato)",
-     "Credit card number (Luhn verified)", "4111 1111 1111 1111"),
-    ("AMOUNT", "Importo in denaro", "Money amount", "€ 12.500,00"),
+    ("IBAN", "IBAN / numero di conto (✓ = checksum verificato)",
+     "IBAN / account number (✓ = checksum verified)", "IT60X0542811101000000123456"),
+    ("CREDITCARDNUMBER", "Numero di carta di credito (✓ = Luhn verificato)",
+     "Credit card number (✓ = Luhn verified)", "4111 1111 1111 1111"),
+    ("AMOUNT", "Importo in denaro, anche in lettere", "Money amount, also written out in words", "€ 12.500,00"),
     ("TARGA", "Targa di veicolo", "Vehicle plate", "AB 123 CD"),
     ("ORG", "Ragione sociale privata: società, studio legale, banca",
      "Private organization: company, law firm, bank", "Edilnord S.r.l."),
-    ("DOCID", "Codice di un atto: ruolo generale, protocollo, repertorio, sentenza",
+    ("DOCID", "Codice di un atto o di un rapporto: ruolo generale, protocollo, repertorio, sentenza, n. pratica/contratto/cliente",
      "Document code: case number, protocol, repertoire, judgment", "1234/2024"),
     ("CATASTO", "Dati catastali: foglio, particella, subalterno",
      "Land registry data: sheet, parcel, subordinate", "Foglio 12, part. 345, sub. 6"),
@@ -439,6 +439,7 @@ def _merge(cands, text):
     La rete regex copre campi a forma molto specifica: per quegli span e' piu' affidabile
     del modello (evita la frammentazione di CF/IBAN/carta in piu' pezzi). Fanno eccezione
     i tag in SOFT_REGEX_LABELS, dove la forma non ha un checksum a confermarla."""
+    extend_same_label(cands)
     order = sorted(
         cands,
         key=lambda e: (1 if e["validated"] else 0,
@@ -491,7 +492,7 @@ def _merge(cands, text):
             merged[-1]["end"] = e["end"]
             continue
         merged.append(e)
-    return merged
+    return balance_parens(merged, text)
 
 
 def _norm(s):
@@ -563,6 +564,8 @@ def analyze(text, excluded=None, mapping_enabled=True, session_id=None):
     model_ents, n_chunks = detect_model(text)
     # il modello taglia i minuti delle ore: la regex dell'ora completa SOLO le sue span TIME
     complete_time(model_ents, text)
+    # etichette incoerenti col valore ("12345678901234" = IBAN?) PRIMA del filtro dei tag
+    fix_model_labels(model_ents, text)
     cands = model_ents + detect_regex(text)
     if excluded:
         cands = [e for e in cands if e["label"] not in excluded]
@@ -856,6 +859,8 @@ def _pdf_response(data, report, redactions, filename="documento_anonimizzato.pdf
     resp.headers["X-PII-Residual"] = str(len(report.get("residual", [])))
     resp.headers["X-PII-Skipped"] = str(len(report.get("skipped", [])))
     resp.headers["X-PII-Notfound"] = str(len(report.get("not_found", [])))
+    # firme non testuali (immagini, tratti, timbri, campi /Sig) tolte dal PDF
+    resp.headers["X-PII-Signatures"] = str(report.get("signatures", 0))
     # pagine scansionate (immagini senza testo): restano come sono, PII comprese
     resp.headers["X-PII-NoText-Pages"] = ",".join(map(str, report.get("no_text_pages", [])))
     # pagine scansionate lette con l'OCR e coperte coi suoi riquadri; quelle la cui
@@ -984,6 +989,7 @@ def pdf_preview_route():
         "residual": len(report.get("residual", [])),
         "skipped": len(report.get("skipped", [])),
         "not_found": len(report.get("not_found", [])),
+        "signatures": report.get("signatures", 0),
         "pages_no_text": report.get("no_text_pages", []),
         "pages_ocr": report.get("ocr_pages", []),
         "ocr_unverified": report.get("ocr_unverified", []),

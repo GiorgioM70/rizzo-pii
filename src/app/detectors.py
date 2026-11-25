@@ -19,6 +19,8 @@ in chiaro senza alcun fallback.
 import bisect
 import re
 
+import words_it
+
 
 def iban_ok(s):
     # Si normalizzano gli stessi separatori che la regex ammette: spazio (anche
@@ -135,6 +137,9 @@ def _phone_shape_ok(m):
         return False
     return _it_national_ok(nat)
 
+
+_SHORT_DATE_RX = re.compile(r"(?<![\d/.\-])(?:0?[1-9]|[12]\d|3[01])[/\-]"
+                            r"(?:0?[1-9]|1[0-2])[/\-]\d{2}(?![\d/.\-]?\d)")
 
 DETECTORS = [
     ("EMAIL",
@@ -271,12 +276,30 @@ DETECTORS = [
                 r"(?:0?[1-9]|1[0-2])[/.\-](?:19|20)\d{2}"
                 r"(?:\s+\d{1,2}[:.]\d{2})?(?!\d)"),
      None, True),
+    # Data con anno a DUE cifre ("1/3/24", "05-06-25"). Il modello ne vede solo la coda
+    # ("3/24") e lasciava "1/" in chiaro accanto al placeholder. Solo "/" e "-":
+    # col punto "1.2.24" e' anche una numerazione di paragrafo.
+    ("DATE", _SHORT_DATE_RX, None, True),
+    # CODICE numerico lungo dopo la sua parola ("pratica 20240001234567", "n. cliente
+    # 4455667788", "polizza n. 123456"): e' un identificativo di rapporto, per la
+    # tassonomia un DOCID (CIG/CUP/POLIZZA/MATRICOLA -> DOCID). Prima restava in chiaro
+    # o il modello lo etichettava IBAN. L'ancora e' obbligatoria: sei cifre da sole
+    # sono un CAP, un importo, un anno e mezzo.
+    ("DOCID",
+     re.compile(r"(?i:\b(?:pratica|contratto|codice|cliente|polizza|matricola|fascicolo"
+                r"|ordine|fattura|ticket|tessera|utenza|rapporto|pos(?:izione)?"
+                r"|n\.?|nr\.?|num\.?|numero)"
+                r"(?:[ \t]+(?:cliente|pratica|contratto|polizza|fascicolo|ordine|fattura"
+                r"|utenza|tessera|di[ \t]+\w+))?"
+                r"[ \t]*(?:n\.?|nr\.?|n°|nº|num\.?|numero)?[ \t]*[:#]?[ \t]*)"
+                r"(?<![\d/])(\d{6,})(?![\d/.,\-]?\d)"),
+     None, True),
 ]
 
 # Label della rete regex SENZA validatore forte: la forma da sola non basta a dire
 # "e' certamente questo campo". In _merge non ereditano la priorita' della rete regex,
 # cosi' il modello puo' sovrascriverle.
-SOFT_REGEX_LABELS = {"DATE"}
+SOFT_REGEX_LABELS = {"DATE", "FULLNAME"}
 
 # Punteggiatura che chiude la frase e non fa parte dell'URL: "vedi https://x.it/pagina."
 _URL_TRAIL = ".,;:!?)]}»\"'"
@@ -441,6 +464,9 @@ def detect_regex(text):
     for label, rx, validator, strict in DETECTORS:
         for m in rx.finditer(text):
             start, end = m.start(), m.end()
+            codice = label == "DOCID" and m.re.groups     # solo le cifre del codice
+            if codice:
+                start, end = m.span(1)
             if label == "TELEPHONENUM" and not _phone_shape_ok(m):
                 continue
             if label == "URL":
@@ -457,10 +483,190 @@ def detect_regex(text):
                 "label": label,
                 "start": start,
                 "end": end,
-                "score": 1.0 if ok else 0.9,
+                # il codice ancorato cede a qualunque forma piu' specifica (telefono, IBAN...)
+                "score": 1.0 if ok else (0.85 if codice else 0.9),
                 "validated": ok,
                 "source": "regex",
+                "union": label == "AMOUNT" or rx is _SHORT_DATE_RX,
             })
+    visti = {(e["label"], e["start"], e["end"]) for e in ents}
+    return ents + [e for e in detect_extras(text)
+                   if (e["label"], e["start"], e["end"]) not in visti]
+
+
+# --------------------------------------------------------------------------- #
+# Forme che il modello e le regex "a cifre" non coprono
+# --------------------------------------------------------------------------- #
+# Codice di 12+ cifre senza ancora (nessun IBAN/carta/telefono ha questa forma
+# quando il checksum non passa): un identificativo di rapporto -> DOCID.
+_LONG_NUMBER = re.compile(r"(?<![\w.,/+\-€])\d{12,}(?![\w.,/\-]?\d)")
+
+# Il firmatario: dopo "F.to", "firmato da", "firma:", "in fede" c'e' quasi sempre
+# il nome di chi firma. Il modello di solito lo trova; questa e' la rete per i nomi
+# che non conosce (stranieri, rari). Il nome e' scritto con le iniziali maiuscole
+# sulla STESSA riga; i titoli ("Dott.", "Avv.") restano fuori dallo span; le parole
+# della lista sotto fermano la lettura ("Firma digitale", "Firma del legale...").
+_SIG_CUE = re.compile(
+    r"(?P<cue>(?i:(?<![\w])(?:f[./][ \t]?(?:to|ta)|firmato(?:[ \t]+da)?|firmata(?:[ \t]+da)?"
+    r"|firma(?:[ \t]+leggibile)?|in[ \t]+fede)(?![\w])[ \t]*(?P<sep>[:,\-–]?)[ \t]*))"
+    r"(?:(?i:(?:dott(?:\.ssa|ssa|\.)?|dr\.?|avv\.?|ing\.?|arch\.?|geom\.?"
+    r"|prof(?:\.ssa|ssa|\.)?|sig(?:\.ra|\.na|ra|\.)?|rag\.?|notaio)[ \t]+))*"
+    r"(?P<nome>(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'’\-]+|[A-Z]\.)"
+    r"(?:[ \t]+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'’\-]+|[A-Z]\.)){0,3})")
+_SIG_STOP = {
+    "digitale", "digitalmente", "elettronica", "elettronico", "qualificata", "autografa",
+    "leggibile", "illeggibile", "il", "la", "lo", "del", "della", "per", "data", "luogo",
+    "timbro", "firma", "firmato", "firmata", "notaio", "legale", "rappresentante",
+    "comune", "tribunale", "studio", "societa", "srl", "spa", "avvocato", "giudice",
+    "cancelliere", "perito", "testimone", "parte", "parti", "richiedente", "dichiarante",
+    "compratore", "venditore", "committente", "appaltatore", "locatore", "conduttore",
+    "cedente", "cessionario", "mandante", "mandatario", "pagina", "fine", "presente",
+    "documento", "originale", "copia", "conforme", "congiunta", "congiunto",
+    # didascalie dei moduli: "Firma Cliente", "Firma Contraente"... non sono nomi
+    "cliente", "contraente", "contraenti", "autorizzata", "autorizzato", "responsabile",
+    "assicurato", "assicuratore", "beneficiario", "titolare", "delegato", "delegante",
+    "incaricato", "fornitore", "proprietario", "inquilino", "acquirente", "mittente",
+    "destinatario", "genitore", "tutore", "amministratore", "socio", "direttore",
+    "presidente", "garante", "fideiussore", "debitore", "creditore", "ricevente",
+    "consegna", "accettazione", "approvazione", "azienda", "ditta", "ente", "ufficio",
+    "operatore", "paziente", "medico", "lavoratore", "datore", "dipendente", "utente",
+    "richiedente", "sottoscrittore", "committente", "consenso", "informato", "digit",
+}
+
+
+def detect_signers(text):
+    ents = []
+    for m in _SIG_CUE.finditer(text):
+        a, b = m.span("nome")
+        words = list(re.finditer(r"\S+", m.group("nome")))
+        end = None
+        for w in words:
+            if re.sub(r"[^a-z]", "", w.group(0).lower()) in _SIG_STOP:
+                break
+            end = a + w.end()
+        if end is not None:
+            n_words = len(m.group("nome")[:end - a].split())
+            # "Firma Cliente", "Firma Contraente": senza i due punti, una sola parola dopo
+            # "firma" e' quasi sempre la didascalia di un modulo, non un nome
+            if m.group("cue").lower().startswith("firma") and not m.group("sep") \
+                    and n_words < 2:
+                continue
+            ents.append({"label": "FULLNAME", "start": a, "end": end, "score": 0.8,
+                         "validated": False, "source": "regex", "union": True})
+    return ents
+
+
+def detect_extras(text):
+    """Numeri/date in lettere, codici lunghi, firmatari."""
+    ents = words_it.detect_words(text) + detect_signers(text)
+    for m in _LONG_NUMBER.finditer(text):
+        ents.append({"label": "DOCID", "start": m.start(), "end": m.end(), "score": 0.8,
+                     "validated": False, "source": "regex", "union": False})
+    return ents
+
+
+def extend_same_label(cands):
+    """Fonde le span SOVRAPPOSTE dello stesso tipo, quando una e' marcata `union`.
+
+    Il modello e la regex vedono pezzi diversi dello stesso dato ("quindici [maggio]
+    millenovecentoottanta", "1/[3/24]"). Nella fusione greedy ne sopravvive una sola
+    e il resto restava in chiaro. Qui entrambe diventano l'unione, quindi chiunque
+    vinca copre tutto. Si modificano le span sul posto; ritorna la stessa lista.
+    Solo sovrapposizioni vere (non adiacenze) e solo tra candidati dello stesso tipo:
+    si maschera di piu', mai di meno.
+
+    Un solo passaggio per tipo su candidati ordinati per inizio: O(n log n). Un
+    confronto di ognuno con tutti gli altri impiegava 50 s su 20.000 righe di chat
+    con una data ciascuna (la stessa trappola che _merge ha gia' evitato)."""
+    if not any(e.get("union") for e in cands):
+        return cands
+    by_label = {}
+    for e in cands:
+        by_label.setdefault(e["label"], []).append(e)
+    for grp in by_label.values():
+        if not any(e.get("union") for e in grp) or len(grp) < 2:
+            continue
+        grp = sorted(grp, key=lambda e: (e["start"], e["end"]))
+        cluster, c_end = [grp[0]], grp[0]["end"]
+        for e in grp[1:] + [None]:
+            if e is not None and e["start"] < c_end:        # sovrapposta al gruppo
+                cluster.append(e)
+                c_end = max(c_end, e["end"])
+                continue
+            if len(cluster) > 1 and any(x.get("union") for x in cluster):
+                lo = min(x["start"] for x in cluster)
+                for x in cluster:
+                    x["start"], x["end"] = lo, c_end
+            if e is not None:
+                cluster, c_end = [e], e["end"]
+    return cands
+
+
+def balance_parens(ents, text):
+    """Una span con una parentesi aperta e non chiusa ("euro 15.000,00 (quindicimila/00")
+    lascia la chiusa accanto al segnaposto: "[AMOUNT_1])". Se la parentesi mancante e'
+    subito fuori dalla span, la si include. Sul posto; ritorna la stessa lista."""
+    for e in ents:
+        seg = text[e["start"]:e["end"]]
+        if seg.count("(") > seg.count(")") and text[e["end"]:e["end"] + 1] == ")":
+            e["end"] += 1
+        elif seg.count(")") > seg.count("(") and e["start"] and text[e["start"] - 1] == "(":
+            e["start"] -= 1
+    return ents
+
+
+# --------------------------------------------------------------------------- #
+# Etichette del modello che non reggono alla prova dei fatti
+#
+# Il modello assegna IBAN a "12345678901234" e BUILDINGNUM a "123456": entita' che
+# vanno mascherate comunque, ma col segnaposto sbagliato. "[IBAN_1]" per un numero di
+# pratica e' fuorviante per chi legge (e per l'LLM a cui si manda il testo). Qui si
+# CAMBIA l'etichetta, non si scarta mai l'entita': l'errore per eccesso e' l'unico
+# accettabile in un anonimizzatore. Il codice di un rapporto e' un DOCID
+# (CIG/CUP/POLIZZA/MATRICOLA -> DOCID nella tassonomia).
+# Va chiamata PRIMA del filtro dei tag esclusi: cosi' un tag disattivato non
+# "nasconde" o "resuscita" entita' che hanno cambiato tipo.
+# --------------------------------------------------------------------------- #
+_CTX_IBAN = re.compile(r"iban|\bc/c\b|c\.c\.|conto|rapporto|banc|filiale", re.I)
+_CTX_PIVA = re.compile(r"p\.?\s?iva|partita|\bvat\b|\biva\b|codice\s+fiscale|c\.?f\.?", re.I)
+_CTX_CARD = re.compile(r"carta|card|visa|mastercard|amex|bancomat|\bpan\b|circuito", re.I)
+_CTX_CODE = re.compile(r"matricola|pratica|contratto|polizza|cliente|fascicolo|ordine|"
+                       r"fattura|ticket|tessera|utenza|rapporto|codice", re.I)
+
+
+def _n_digits(v):
+    return sum(c.isdigit() for c in v)
+
+
+def fix_model_labels(ents, text):
+    """Corregge sul posto le etichette del MODELLO palesemente incoerenti col valore.
+    Tocca solo le entita' con source == "modello"; ritorna la stessa lista."""
+    for e in ents:
+        if e.get("source") != "modello":
+            continue
+        val = text[e["start"]:e["end"]]
+        ctx = text[max(0, e["start"] - 30):e["start"]]
+        label, nd = e["label"], _n_digits(val)
+        # Le tre etichette "a checksum": se il checksum non passa e il valore non ha
+        # nemmeno la forma, il contesto deve giustificare l'etichetta; altrimenti e' un
+        # codice generico. (Un IBAN valido o una carta valida non arrivano qui.)
+        if label == "IBAN":
+            if not (iban_ok(val) or re.match(r"[A-Za-z]{2}\d{2}", val.strip())
+                    or _CTX_IBAN.search(ctx)) and nd >= 5:
+                e["label"] = "DOCID"
+        elif label == "PIVA":
+            if not (piva_ok(val) or _CTX_PIVA.search(ctx)) and nd >= 5:
+                e["label"] = "DOCID"
+        elif label == "CREDITCARDNUMBER":
+            if not (luhn_ok(val) or _CTX_CARD.search(ctx)) and nd >= 5:
+                e["label"] = "DOCID"
+        elif label == "BUILDINGNUM":
+            # un civico ha al massimo 4-5 cifre ("12/B", "1024"); sei cifre sono un codice
+            if nd > 5 or (nd >= 3 and _CTX_CODE.search(ctx)):
+                e["label"] = "DOCID"
+        elif label == "ID_DOC":
+            if _CTX_CODE.search(ctx) and not re.search(r"identit|passaporto|patente|carta", ctx, re.I):
+                e["label"] = "DOCID"
     return ents
 
 
